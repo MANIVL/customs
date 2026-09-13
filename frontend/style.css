@@ -619,3 +619,12 @@ footer {
   color: var(--color-text-muted);
   font-size: 13px;
 }
+
+/* AI button gradient */
+.btn-primary[style*="gradient"] {
+  color: #fff;
+  font-weight: 600;
+}
+.btn-primary[style*="gradient"]:hover {
+  opacity: 0.9;
+}

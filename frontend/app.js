@@ -736,6 +736,49 @@
     if (aiEl.messages) aiEl.messages.appendChild(welcome);
   })();
 
+  // ---- AI Analyze (Yandex GPT) ----
+  var aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
+  if (aiAnalyzeBtn) {
+    aiAnalyzeBtn.addEventListener('click', function () {
+      if (!inputFiles.length) {
+        showError('Сначала загрузите входные файлы.');
+        return;
+      }
+      aiAnalyzeBtn.disabled = true;
+      aiAnalyzeBtn.textContent = '🤖 ИИ анализирует…';
+      setProgress(10);
+
+      var fd = new FormData();
+      inputFiles.forEach(function (f) { fd.append('inputs', f); });
+      fd.append('country', el.countryInput.value.trim() || 'CN');
+      fd.append('unit', el.unitInput.value.trim() || 'шт');
+
+      fetch(API + '/api/ai/analyze', {
+        method: 'POST',
+        body: fd,
+      })
+        .then(function (res) {
+          setProgress(100);
+          if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || 'Ошибка'); });
+          return res.blob().then(function (blob) { return { blob: blob }; });
+        })
+        .then(function (data) {
+          triggerDownload(data.blob, 'ai_result.xlsx');
+          showResult(data.blob, 'ai_result.xlsx');
+          aiAnalyzeBtn.textContent = '🤖 ИИ-анализ файлов';
+          aiAnalyzeBtn.disabled = false;
+        })
+        .catch(function (e) {
+          showError('ИИ-анализ не удался: ' + e.message);
+          aiAnalyzeBtn.textContent = '🤖 ИИ-анализ файлов';
+          aiAnalyzeBtn.disabled = false;
+        })
+        .finally(function () {
+          hideProgress();
+        });
+    });
+  }
+
   // ---- Инициализация ----
   loadTemplateInfo();
 })();

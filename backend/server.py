@@ -10,12 +10,12 @@ Endpoints:
   POST /api/template                        -> upload/replace the stored template
   POST /api/preview                         -> JSON report of what would be filled in
   POST /api/process                         -> filled .xlsx as a download
+  POST /api/ai/analyze                      -> AI analyzes Excel files and fills template
   GET  /api/svh/search                      -> search SVH/TS registry ( Alta.ru )
   GET  /api/svh/detail/{license}             -> detailed card for a specific SVH/TS
   GET  /api/svh/all                         -> full registry with pagination
   GET  /api/svh/cache/stats                 -> cache statistics
   DELETE /api/svh/cache                     -> clear cache
-  POST /api/ai/chat                         -> chat with Yandex GPT assistant
 """
 import io
 import os
@@ -29,6 +29,7 @@ import time
 import sqlite3
 import urllib.request
 import urllib.error
+import openpyxl
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode
@@ -56,30 +57,66 @@ YANDEX_GPT_API_URL = "https://llm.api.cloud.yandex.net/llm/v1/completion"
 _YANDEX_API_KEY = os.environ.get("YANDEX_GPT_API_KEY")
 _YANDEX_MODEL_URN = os.environ.get("YANDEX_MODEL_URN", "gpt://b1g9m7q1q3s2t4u5v6w/yandexgpt-lite")
 
-# System prompt: customs expert
-SYSTEM_PROMPT = (
-    "Ты — эксперт по таможенному делу, ВЭД и документообороту. "
-    "Помогаешь декларантам и участникам ВЭД: объясняешь процедуры, "
-    "помогаешь с сертификатами соответствия (МНР), ТН ВЭД, "
-    "списком необходимых документов, таможенными складами (СВХ). "
-    "Отвечай кратко, по делу, на русском языке. "
-    "Если не уверен в ответе — скажи об этом."
-)
+# System prompt: AI Excel analyzer
+_AI_SYSTEM_PROMPT = """Ты — эксперт по анализу Excel-файлов для таможенного декларирования.
+Твоя задача: проанализировать загруженные Excel-файлы (инвойс, спецификация, пакинг и т.п.)
+и найти в них нужные столбцы для заполнения эталонного шаблона.
 
-# In-memory conversation history per session
-_chat_history: dict[str, list[dict]] = {}
+Canonical поля шаблона:
+- no: номер позиции (№ строки, № позиции)
+- tariff_code: код ТН ВЭД
+- name: наименование товара
+- article: артикул
+- marks: торговая марка
+- manufacturer: производитель
+- country: страна происхождения
+- unit: единица измерения (шт, кг, л и т.п.)
+- qty: количество в единицах
+- price: цена за единицу (USD)
+- amount: общая стоимость (USD)
+- net_weight: вес нетто
+- gross_weight: вес брутто
+- cll: количество мест
+- mnr: номер сертификата/декларации (МНР)
+- date_from: дата выдачи сертификата
+- date_to: дата окончания сертификата
+- mnr_code: код МНР (01401, 01402, 01408, 01206)
+- mnr2: второй сертификат (свидетельство о гос. регистрации)
+- date_from2: дата выдачи второго сертификата
+- date_to2: дата окончания второго сертификата
+- mnr_code2: код второго сертификата
+
+Верни JSON строго в таком формате:
+{
+  "mapping": {
+    "no": 1,
+    "name": 3,
+    "price": 5,
+    ...
+  },
+  "items": [
+    {"row": 2, "no": 1, "name": "...", "price": 10.50, ...},
+    {"row": 3, "no": 2, "name": "...", "price": 20.00, ...}
+  ],
+  "certificates": [
+    {"mnr": "...", "date_from": "DD.MM.YYYY", "date_to": "DD.MM.YYYY", "mnr_code": "01401"},
+    ...
+  ]
+}
+
+Если какое-то поле не найдено — не включай его в mapping.
+items — это список строк с данными товаров (минимум 1).
+certificates — список найденных сертификатов/деклараций.
+"""
+
+# In-memory session state
+_ai_sessions: dict[str, dict] = {}
 
 
 # ── Yandex GPT helper ─────────────────────────────────────────────────────
 
-def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -> str:
-    """Call Yandex GPT API and return the assistant's reply."""
-    payload = json.dumps({
-        "modelUri": model_urn,
-        "messages": messages,
-    }).encode("utf-8")
-    
-    # Get OAuth token from API key
+def _get_iam_token() -> str:
+    """Exchange API key for OAuth token via Yandex IAM."""
     auth_payload = json.dumps({"api_key": _YANDEX_API_KEY}).encode("utf-8")
     auth_req = Request(
         "https://iam.api.cloud.yandex.net/iam/v1/tokens",
@@ -89,7 +126,19 @@ def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -
     )
     with urlopen(auth_req, timeout=10) as auth_resp:
         auth_body = json.loads(auth_resp.read().decode("utf-8"))
-    oauth_token = auth_body.get("iamToken", "")
+    return auth_body.get("iamToken", "")
+
+
+def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -> str:
+    """Call Yandex GPT API and return the assistant's reply."""
+    payload = json.dumps({
+        "modelUri": model_urn,
+        "messages": messages,
+    }).encode("utf-8")
+    
+    oauth_token = _get_iam_token()
+    if not oauth_token:
+        raise Exception("Failed to get OAuth token from Yandex IAM")
     
     req = Request(
         YANDEX_GPT_API_URL,
@@ -112,8 +161,27 @@ def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -
     if not text:
         text = body.get("text", "")
     if not text:
-        text = json.dumps(body, ensure_ascii=False)  # fallback: return raw
+        text = json.dumps(body, ensure_ascii=False)
     return text
+
+
+def _extract_excel_preview(content: bytes, max_rows: int = 20) -> str:
+    """Extract headers and first N rows from Excel file as TSV."""
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    ws = wb.worksheets[0]  # First sheet
+    lines = []
+    for r in range(1, min(ws.max_row + 1, max_rows + 1)):
+        row_data = []
+        for c in range(1, ws.max_column + 1):
+            val = ws.cell(row=r, column=c).value
+            if val is None:
+                row_data.append("")
+            elif isinstance(val, (int, float)):
+                row_data.append(str(val))
+            else:
+                row_data.append(str(val).replace("\t", " ").replace("\n", " "))
+        lines.append("\t".join(row_data))
+    return "\n".join(lines)
 
 
 if not os.path.exists(TEMPLATE_PATH) and os.path.exists(DEFAULT_TEMPLATE_PATH):
@@ -781,41 +849,93 @@ async def clear_svh_cache():
     return {"ok": True, "message": "Кэш очищен"}
 
 
-# ── Yandex GPT chat endpoint ──────────────────────────────────────────────
+# ── AI Excel Analyzer endpoint ────────────────────────────────────────────
 
-@app.post("/api/ai/chat")
-async def ai_chat(
-    request: dict = Body(default=None),
+@app.post("/api/ai/analyze")
+async def ai_analyze(
+    inputs: list[UploadFile] = File(...),
+    template: UploadFile | None = File(None),
+    country: str = Form("CN"),
+    unit: str = Form("шт"),
 ):
-    """Chat with Yandex GPT assistant. Returns AI response."""
-    if not request:
-        return JSONResponse({"error": "Введите сообщение"}, status_code=422)
-    message = request.get("message", "").strip()
-    session = request.get("session", "")
-    if not message:
-        return JSONResponse({"error": "Введите сообщение"}, status_code=422)
-
-    # Generate or reuse session ID
-    if not session:
-        session = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    # Build messages list (system + history + new message)
-    history = _chat_history.get(session, [])
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
-
+    """AI analyzes Excel files, finds columns by meaning, fills template."""
     try:
-        reply = await run_in_threadpool(_call_yandex_gpt, messages)
-        # Save conversation history (last 20 messages to avoid unbounded growth)
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": reply})
-        _chat_history[session] = history[-20:]
-        return {
-            "reply": reply,
-            "session": session,
-        }
+        template_bytes = await _resolve_template(template)
+        input_bytes = await _read_all(inputs)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    
+    # Extract preview from each file
+    file_previews: list[str] = []
+    for i, content in enumerate(input_bytes):
+        preview = _extract_excel_preview(content, max_rows=30)
+        file_previews.append(f"--- Файл {i+1} ---\n{preview}")
+    
+    user_content = "Файлы для анализа:\n\n" + "\n\n".join(file_previews)
+    
+    messages = [
+        {"role": "system", "content": _AI_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+    
+    try:
+        ai_reply = await run_in_threadpool(_call_yandex_gpt, messages)
     except Exception as e:
         traceback.print_exc()
         return JSONResponse({"error": f"Ошибка Yandex GPT: {e}"}, status_code=502)
+    
+    # Parse AI response
+    try:
+        # Extract JSON from markdown code blocks if present
+        ai_text = ai_reply.strip()
+        if "```json" in ai_text:
+            ai_text = ai_text.split("```json")[1].split("```")[0]
+        elif "```" in ai_text:
+            ai_text = ai_text.split("```")[1].split("```")[0]
+        
+        ai_data = json.loads(ai_text)
+        mapping = ai_data.get("mapping", {})
+        items_list = ai_data.get("items", [])
+        certificates = ai_data.get("certificates", [])
+        
+        # Build items dict for engine
+        items_dict: dict[int, dict] = {}
+        for item in items_list:
+            row_no = item.get("row")
+            if row_no:
+                items_dict[row_no] = {k: v for k, v in item.items() if k not in ("row", "no")}
+                if "no" in item:
+                    items_dict[row_no]["no"] = item["no"]
+        
+        # Add certificates if found
+        for cert in certificates:
+            if cert.get("mnr"):
+                # Find first item without certificate and add it
+                for no, rec in items_dict.items():
+                    if not rec.get("mnr"):
+                        rec["mnr"] = cert["mnr"]
+                        if cert.get("date_from"):
+                            rec["date_from"] = cert["date_from"]
+                        if cert.get("date_to"):
+                            rec["date_to"] = cert["date_to"]
+                        if cert.get("mnr_code"):
+                            rec["mnr_code"] = cert["mnr_code"]
+                        break
+        
+        # Fill template using AI mapping
+        settings = {"country": country, "unit": unit}
+        result_bytes = engine.fill_template_with_ai(template_bytes, items_dict, mapping, settings)
+        
+        return StreamingResponse(
+            io.BytesIO(result_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="ai_result.xlsx"'},
+        )
+    except json.JSONDecodeError as e:
+        return JSONResponse({"error": f"Не удалось распознать ответ ИИ: {e}. Ответ: {ai_reply[:200]}"}, status_code=500)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": f"Ошибка обработки: {e}"}, status_code=500)
 
 
 @app.get("/api/template")

@@ -435,6 +435,77 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
 
 
 # --------------------------------------------------------------------------
+# AI-assisted template filling
+# --------------------------------------------------------------------------
+
+def fill_template_with_ai(
+    template_bytes: bytes,
+    items: dict[int, dict],
+    ai_mapping: dict[str, int],
+    settings: dict,
+) -> bytes:
+    """Fill template using AI-provided column mapping.
+    
+    ai_mapping: {"no": 1, "name": 3, "price": 5, ...}  (1-based column indices)
+    items: {row_no: {field: value, ...}}
+    """
+    wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
+    ws = wb.worksheets[0]
+
+    header_row, columns = find_template_table(ws)
+    data_start = header_row + 1
+
+    fixed_country = settings.get("country", "CN")
+    fixed_unit = settings.get("unit", "шт")
+
+    # Build reverse mapping: template column -> AI column
+    # template columns are already mapped by find_template_table
+    # We need to read from AI columns instead
+    
+    for i, item_no in enumerate(sorted(items.keys())):
+        rec = items[item_no]
+        row = data_start + i
+
+        def put(field_key, value):
+            col = columns.get(field_key)
+            if not col:
+                return
+            cell = ws.cell(row=row, column=col, value=value)
+            cell.font = DATA_FONT
+            cell.alignment = DATA_ALIGNMENT
+            numfmt = DATA_NUMBER_FORMATS.get(field_key)
+            if numfmt:
+                cell.number_format = numfmt
+
+        put("no", item_no)
+        put("tariff_code", rec.get("tariff_code"))
+        put("name", rec.get("name"))
+        put("article", rec.get("article"))
+        put("marks", rec.get("marks"))
+        put("manufacturer", rec.get("manufacturer"))
+        put("country", fixed_country)
+        put("unit", fixed_unit)
+        put("qty", rec.get("qty"))
+        put("price", rec.get("price"))
+        put("amount", rec.get("amount"))
+        put("net_weight", rec.get("net_weight"))
+        put("gross_weight", rec.get("gross_weight"))
+        put("cll", rec.get("cll"))
+        put("mnr", rec.get("mnr"))
+        put("date_from", rec.get("date_from"))
+        put("date_to", rec.get("date_to"))
+        put("mnr_code", rec.get("mnr_code"))
+        put("mnr2", rec.get("mnr2"))
+        put("date_from2", rec.get("date_from2"))
+        put("date_to2", rec.get("date_to2"))
+        put("mnr_code2", rec.get("mnr_code2"))
+
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+# --------------------------------------------------------------------------
 # High-level entry point
 # --------------------------------------------------------------------------
 
