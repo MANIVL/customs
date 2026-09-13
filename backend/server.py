@@ -39,7 +39,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import engine
 
-from fastapi import FastAPI, UploadFile, File, Form, Query
+from fastapi import FastAPI, UploadFile, File, Form, Query, Body
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -52,7 +52,7 @@ META_PATH = os.path.join(DATA_DIR, "template_meta.json")
 SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
 
 # ── Yandex GPT (YandexCloud) ──────────────────────────────────────────────
-YANDEX_GPT_API_URL = "https://llm.api.cloud.yandex.net/llm/v1alpha/chat"
+YANDEX_GPT_API_URL = "https://llm.api.cloud.yandex.net/llm/v1/completion"
 _YANDEX_API_KEY = os.environ.get("YANDEX_GPT_API_KEY")
 _YANDEX_MODEL_URN = os.environ.get("YANDEX_MODEL_URN", "gpt://b1g9m7q1q3s2t4u5v6w/yandexgpt-lite")
 
@@ -78,56 +78,43 @@ def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -
         "modelUri": model_urn,
         "messages": messages,
     }).encode("utf-8")
+    
+    # Get OAuth token from API key
+    auth_payload = json.dumps({"api_key": _YANDEX_API_KEY}).encode("utf-8")
+    auth_req = Request(
+        "https://iam.api.cloud.yandex.net/iam/v1/tokens",
+        data=auth_payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urlopen(auth_req, timeout=10) as auth_resp:
+        auth_body = json.loads(auth_resp.read().decode("utf-8"))
+    oauth_token = auth_body.get("iamToken", "")
+    
     req = Request(
         YANDEX_GPT_API_URL,
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Api-Key {_YANDEX_API_KEY}",
+            "Authorization": f"Bearer {oauth_token}",
         },
         method="POST",
     )
-    with urlopen(req, timeout=60) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
+    try:
+        with urlopen(req, timeout=60) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8") if e.fp else ""
+        raise Exception(f"Yandex GPT API error: {e.code} - {error_body}")
+    
     # Yandex GPT response format
     text = body.get("result", "").get("choices", [{}])[0].get("message", {}).get("text", "")
+    if not text:
+        text = body.get("text", "")
     if not text:
         text = json.dumps(body, ensure_ascii=False)  # fallback: return raw
     return text
 
-
-# ── Yandex GPT chat endpoint ──────────────────────────────────────────────
-
-@app.post("/api/ai/chat")
-async def ai_chat(
-    message: str = "",
-    session: str = "",
-):
-    """Chat with Yandex GPT assistant. Returns AI response."""
-    if not message.strip():
-        return JSONResponse({"error": "Введите сообщение"}, status_code=422)
-
-    # Generate or reuse session ID
-    if not session:
-        session = datetime.datetime.now(datetime.timezone.utc).isoformat()
-
-    # Build messages list (system + history + new message)
-    history = _chat_history.get(session, [])
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
-
-    try:
-        reply = await run_in_threadpool(_call_yandex_gpt, messages)
-        # Save conversation history (last 20 messages to avoid unbounded growth)
-        history.append({"role": "user", "content": message})
-        history.append({"role": "assistant", "content": reply})
-        _chat_history[session] = history[-20:]
-        return {
-            "reply": reply,
-            "session": session,
-        }
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse({"error": f"Ошибка Yandex GPT: {e}"}, status_code=502)
 
 if not os.path.exists(TEMPLATE_PATH) and os.path.exists(DEFAULT_TEMPLATE_PATH):
     shutil.copy(DEFAULT_TEMPLATE_PATH, TEMPLATE_PATH)
@@ -792,6 +779,43 @@ async def clear_svh_cache():
     _cache_clear()
     _svh_mem_cache.clear()
     return {"ok": True, "message": "Кэш очищен"}
+
+
+# ── Yandex GPT chat endpoint ──────────────────────────────────────────────
+
+@app.post("/api/ai/chat")
+async def ai_chat(
+    request: dict = Body(default=None),
+):
+    """Chat with Yandex GPT assistant. Returns AI response."""
+    if not request:
+        return JSONResponse({"error": "Введите сообщение"}, status_code=422)
+    message = request.get("message", "").strip()
+    session = request.get("session", "")
+    if not message:
+        return JSONResponse({"error": "Введите сообщение"}, status_code=422)
+
+    # Generate or reuse session ID
+    if not session:
+        session = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # Build messages list (system + history + new message)
+    history = _chat_history.get(session, [])
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
+
+    try:
+        reply = await run_in_threadpool(_call_yandex_gpt, messages)
+        # Save conversation history (last 20 messages to avoid unbounded growth)
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reply})
+        _chat_history[session] = history[-20:]
+        return {
+            "reply": reply,
+            "session": session,
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": f"Ошибка Yandex GPT: {e}"}, status_code=502)
 
 
 @app.get("/api/template")
