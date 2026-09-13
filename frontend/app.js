@@ -234,7 +234,7 @@
   }
 
   function addFiles(fileListObj) {
-    const arr = Array.from(fileListObj).filter((f) => /\.xlsx$/i.test(f.name));
+    const arr = Array.from(fileListObj).filter((f) => /\.xlsx?$/i.test(f.name));
     inputFiles = inputFiles.concat(arr);
     renderFileList();
   }

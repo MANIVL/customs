@@ -30,6 +30,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.styles import Font, Alignment
 import datetime
+import excel_io
 
 
 # --------------------------------------------------------------------------
@@ -287,50 +288,158 @@ def sheet_priority_key(name: str) -> int:
 # --------------------------------------------------------------------------
 
 def extract_items_from_workbook(wb) -> dict[int, dict]:
-    """Returns {item_no: {canonical_field: value, ...}} merged across all
-    sheets in this workbook (priority order = DEFAULT_SHEET_PRIORITY)."""
+    """Extract items; sum qty on invoice sheets, weights on packing sheets."""
     tables: list[SheetTable] = []
     for ws in wb.worksheets:
         t = build_sheet_table(ws)
-        if t:
+        if t and "article" in t.columns:
             tables.append(t)
-    tables.sort(key=lambda t: sheet_priority_key(t.sheet_name))
 
-    items: dict[int, dict] = {}
-    for t in tables:
-        ws = wb[t.sheet_name]
-        for item_no, row in t.item_rows.items():
-            rec = items.setdefault(item_no, {})
-            for field_key, col in t.columns.items():
-                if field_key == "no":
+    sum_fields = {"qty", "amount", "net_weight", "gross_weight", "cll"}
+    weight_fields = {"net_weight", "gross_weight", "cll"}
+
+    def add_num(target: dict, key: str, value) -> None:
+        if value in (None, ""):
+            return
+        if key in sum_fields:
+            try:
+                left = float(target[key]) if target.get(key) not in (None, "") else None
+                right = float(value)
+            except (TypeError, ValueError):
+                left = right = None
+            if left is not None and right is not None:
+                total = left + right
+                target[key] = int(total) if float(total).is_integer() else total
+                return
+        if target.get(key) in (None, ""):
+            target[key] = value
+
+    def sheet_kind(name: str) -> str:
+        n = normalize(name)
+        if any(k in n for k in ("pack", "пак", "pl(", "pl ")):
+            return "packing"
+        if any(k in n for k in ("invoice", "инвойс", "in (", "in(")):
+            return "invoice"
+        return "other"
+
+    def collect(kind_filter: str) -> dict[str, dict]:
+        by_article: dict[str, dict] = {}
+        for t in tables:
+            if sheet_kind(t.sheet_name) != kind_filter:
+                continue
+            ws = wb[t.sheet_name]
+            for _no, row in t.item_rows.items():
+                rec: dict = {}
+                for field_key, col in t.columns.items():
+                    if field_key == "no":
+                        continue
+                    val = ws.cell(row=row, column=col).value
+                    if val not in (None, ""):
+                        rec[field_key] = val
+                art = rec.get("article")
+                if art in (None, ""):
                     continue
-                if rec.get(field_key) not in (None, ""):
+                blob = " ".join(str(v).lower() for v in rec.values())
+                if "sum" in blob or "всего" in blob or "паллет" in blob:
                     continue
-                val = ws.cell(row=row, column=col).value
-                if val not in (None, ""):
-                    rec[field_key] = val
-            if not any(rec.get(k) for k in CERT_FIELDS):
-                cert = find_cert_in_row(ws, row)
-                if cert:
-                    rec.update(cert)
-    return items
+                key = normalize(art)
+                if key not in by_article:
+                    by_article[key] = dict(rec)
+                else:
+                    for k, v in rec.items():
+                        add_num(by_article[key], k, v)
+                if not any(by_article[key].get(c) for c in CERT_FIELDS):
+                    cert = find_cert_in_row(ws, row)
+                    if cert:
+                        for ck, cv in cert.items():
+                            if by_article[key].get(ck) in (None, ""):
+                                by_article[key][ck] = cv
+        return by_article
+
+    invoice = collect("invoice")
+    packing = collect("packing")
+    if not invoice and not packing:
+        # unnamed sheets: treat all as invoice-like
+        for t in tables:
+            ws = wb[t.sheet_name]
+            for _no, row in t.item_rows.items():
+                rec = {}
+                for field_key, col in t.columns.items():
+                    if field_key == "no":
+                        continue
+                    val = ws.cell(row=row, column=col).value
+                    if val not in (None, ""):
+                        rec[field_key] = val
+                art = rec.get("article")
+                if art in (None, ""):
+                    continue
+                key = normalize(art)
+                if key not in invoice:
+                    invoice[key] = dict(rec)
+                else:
+                    for k, v in rec.items():
+                        add_num(invoice[key], k, v)
+
+    order = list(invoice.keys())
+    for key, rec in packing.items():
+        if key in invoice:
+            for f in weight_fields:
+                if rec.get(f) not in (None, ""):
+                    invoice[key][f] = rec[f]
+            if invoice[key].get("name") in (None, "") and rec.get("name") not in (None, ""):
+                invoice[key]["name"] = rec["name"]
+        else:
+            invoice[key] = dict(rec)
+            order.append(key)
+
+    return {i + 1: invoice[k] for i, k in enumerate(order)}
 
 
 def merge_workbooks(items_list: list[dict[int, dict]]) -> dict[int, dict]:
-    """Merge item dicts coming from multiple uploaded input files. Later
-    files fill in gaps left by earlier ones; on conflicting item numbers
-    across *different shipments* this would be wrong, so in practice each
-    uploaded batch of files should represent one shipment. If the same item
-    number appears in more than one *file*, values are merged the same way
-    as within one workbook (first non-empty wins, file order = upload order).
-    """
-    merged: dict[int, dict] = {}
+    """Merge items from multiple files; same article → sum qty/weights."""
+    by_article: dict[str, dict] = {}
+    order: list[str] = []
+    no_article: list[dict] = []
+    sum_fields = {"qty", "amount", "net_weight", "gross_weight", "cll"}
+
+    def add_num(target: dict, key: str, value) -> None:
+        if value in (None, ""):
+            return
+        if key in sum_fields:
+            try:
+                left = float(target[key]) if target.get(key) not in (None, "") else None
+                right = float(value)
+            except (TypeError, ValueError):
+                left = right = None
+            if left is not None and right is not None:
+                total = left + right
+                target[key] = int(total) if float(total).is_integer() else total
+                return
+        if target.get(key) in (None, ""):
+            target[key] = value
+
     for items in items_list:
-        for no, rec in items.items():
-            target = merged.setdefault(no, {})
-            for k, v in rec.items():
-                if target.get(k) in (None, "") and v not in (None, ""):
-                    target[k] = v
+        for _no, rec in items.items():
+            art = rec.get("article")
+            key = normalize(art) if art not in (None, "") else ""
+            if key:
+                if key not in by_article:
+                    by_article[key] = dict(rec)
+                    order.append(key)
+                else:
+                    for k, v in rec.items():
+                        add_num(by_article[key], k, v)
+            else:
+                no_article.append(dict(rec))
+
+    merged: dict[int, dict] = {}
+    i = 1
+    for key in order:
+        merged[i] = by_article[key]
+        i += 1
+    for rec in no_article:
+        merged[i] = rec
+        i += 1
     return merged
 
 
@@ -488,7 +597,7 @@ def process(template_bytes: bytes, input_files: list[bytes], settings: dict | No
     settings = settings or {}
     items_list = []
     for content in input_files:
-        wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+        wb = excel_io.load_workbook(content, data_only=True)
         items_list.append(extract_items_from_workbook(wb))
 
     merged = merge_workbooks(items_list)

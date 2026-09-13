@@ -153,13 +153,20 @@ def _safe_filename(name: str | None, fallback: str = "template.xlsx") -> str:
     return cleaned or fallback
 
 
-def _validate_xlsx(filename: str | None, content: bytes) -> None:
-    if not filename or not filename.lower().endswith(".xlsx"):
-        raise ValueError("Ожидается файл с расширением .xlsx")
+def _validate_excel(filename: str | None, content: bytes) -> None:
+    if not filename:
+        raise ValueError("Ожидается файл с расширением .xlsx или .xls")
+    lower = filename.lower()
+    if not (lower.endswith(".xlsx") or lower.endswith(".xls")):
+        raise ValueError("Ожидается файл с расширением .xlsx или .xls")
     if len(content) > MAX_FILE_SIZE:
         raise ValueError("Файл слишком большой (максимум 20 МБ)")
-    if not content.startswith(b"PK"):
-        raise ValueError("Файл не является корректным .xlsx")
+    if lower.endswith(".xlsx"):
+        if not content.startswith(b"PK"):
+            raise ValueError("Файл не является корректным .xlsx")
+    elif lower.endswith(".xls"):
+        if not content.startswith(b"\xd0\xcf\x11\xe0"):
+            raise ValueError("Файл не является корректным .xls")
 
 
 def _read_meta():
@@ -719,7 +726,7 @@ async def ai_analyze(
     """YandexGPT сопоставляет столбцы по смыслу и заполняет шаблон."""
     try:
         template_bytes = await _resolve_template(template)
-        input_bytes = await _read_all(inputs)
+        input_bytes, input_names = await _read_all(inputs)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     except FileNotFoundError as e:
@@ -737,7 +744,11 @@ async def ai_analyze(
 
     try:
         result_bytes, report = await run_in_threadpool(
-            ai_mapper.process_with_ai, template_bytes, input_bytes, settings
+            ai_mapper.process_with_ai,
+            template_bytes,
+            input_bytes,
+            settings,
+            input_names,
         )
     except Exception as e:
         traceback.print_exc()
@@ -783,7 +794,12 @@ def download_template():
 async def upload_template(file: UploadFile = File(...)):
     content = await file.read()
     try:
-        _validate_xlsx(file.filename, content)
+        if not file.filename or not file.filename.lower().endswith(".xlsx"):
+            raise ValueError("Эталонный шаблон должен быть в формате .xlsx")
+        if not content.startswith(b"PK"):
+            raise ValueError("Файл не является корректным .xlsx")
+        if len(content) > MAX_FILE_SIZE:
+            raise ValueError("Файл слишком большой (максимум 20 МБ)")
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     with open(TEMPLATE_PATH, "wb") as f:
@@ -797,22 +813,24 @@ async def upload_template(file: UploadFile = File(...)):
     return {"exists": True, **meta}
 
 
-async def _read_all(files: list[UploadFile]) -> list[bytes]:
+async def _read_all(files: list[UploadFile]) -> tuple[list[bytes], list[str]]:
     if len(files) > MAX_FILES:
         raise ValueError(f"Слишком много файлов (максимум {MAX_FILES})")
-    out = []
+    out: list[bytes] = []
+    names: list[str] = []
     for f in files:
         content = await f.read()
-        _validate_xlsx(f.filename, content)
+        _validate_excel(f.filename, content)
         out.append(content)
-    return out
+        names.append(f.filename or "input.xlsx")
+    return out, names
 
 
 async def _resolve_template(template: UploadFile | None) -> bytes:
     if template is not None:
         content = await template.read()
         if content:
-            _validate_xlsx(template.filename, content)
+            _validate_excel(template.filename, content)
             return content
     if os.path.exists(TEMPLATE_PATH):
         with open(TEMPLATE_PATH, "rb") as f:
@@ -829,7 +847,7 @@ async def preview(
 ):
     try:
         template_bytes = await _resolve_template(template)
-        input_bytes = await _read_all(inputs)
+        input_bytes, _names = await _read_all(inputs)
         settings = {"country": country, "unit": unit}
         _, report = await run_in_threadpool(engine.process, template_bytes, input_bytes, settings)
         return JSONResponse(report)
@@ -849,7 +867,7 @@ async def process_files(
 ):
     try:
         template_bytes = await _resolve_template(template)
-        input_bytes = await _read_all(inputs)
+        input_bytes, _names = await _read_all(inputs)
         settings = {"country": country, "unit": unit}
         result_bytes, report = await run_in_threadpool(
             engine.process, template_bytes, input_bytes, settings
