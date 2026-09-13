@@ -1,5 +1,12 @@
 __pycache__/
 *.py[cod]
 .venv/
+venv/
 python-runtime/
+.env
 backend/data/current_template.xlsx
+backend/data/svh_cache.db
+backend/data/svh_debug.html
+backend/data/_ai_debug*
+*.xlsx
+!backend/data/default_template.xlsx

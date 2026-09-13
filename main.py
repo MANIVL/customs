@@ -31,20 +31,26 @@ def main() -> None:
     import uvicorn
     import server  # backend/server.py
 
+    # Cloud platforms (Render, Railway, Fly) set PORT.
     host = os.environ.get("APP_HOST", "127.0.0.1")
-    port = int(os.environ.get("APP_PORT", "8756"))
-    open_browser = os.environ.get("APP_OPEN_BROWSER", "1") != "0"
+    if "PORT" in os.environ:
+        host = os.environ.get("APP_HOST", "0.0.0.0")
+        port = int(os.environ["PORT"])
+        open_browser = False
+    else:
+        port = int(os.environ.get("APP_PORT", "8756"))
+        open_browser = os.environ.get("APP_OPEN_BROWSER", "1") != "0"
+
     local_url = f"http://127.0.0.1:{port}/"
 
     def open_when_ready() -> None:
         if wait_until_ready(local_url + "api/health") and open_browser:
             webbrowser.open(local_url)
 
-    threading.Thread(target=open_when_ready, daemon=True).start()
+    if open_browser:
+        threading.Thread(target=open_when_ready, daemon=True).start()
 
-    print(f"ТаможенФормат: {local_url}")
-    if host not in ("127.0.0.1", "localhost"):
-        print(f"Сервер слушает {host}:{port} (доступ из сети).")
+    print(f"ТаможенФормат: http://{host}:{port}/")
     print("Чтобы остановить, нажмите Ctrl+C.")
     uvicorn.run(server.app, host=host, port=port, log_level="info")
 

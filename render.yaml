@@ -2,7 +2,19 @@ services:
   - type: web
     name: tamozhenformat
     runtime: python
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn backend.server:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /api/health
     plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --app-dir backend --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: APP_OPEN_BROWSER
+        value: "0"
+      - key: YANDEX_API_KEY
+        sync: false
+      - key: YANDEX_FOLDER_ID
+        sync: false
+      - key: YANDEX_MODEL
+        value: yandexgpt-lite

@@ -40,20 +40,20 @@ import datetime
 # header cell for each canonical field. A header cell matches a field if any
 # of its keywords is a substring of the normalized cell text.
 HEADER_KEYWORDS: dict[str, list[str]] = {
-    "no": ["№", "no."],
-    "tariff_code": ["tariff code", "код товара", "тн вэд"],
-    "name": ["name of product", "наименование товара"],
-    "article": ["article", "артикул"],
-    "marks": ["marks /", "торговая марка"],
+    "no": ["№", "no.", "no /"],
+    "tariff_code": ["tariff code", "код товара", "тн вэд", "hs code"],
+    "name": ["name of product", "наименование товара", "наименование", "description"],
+    "article": ["article", "артикул", "sku"],
+    "marks": ["marks /", "торговая марка", "бренд", "brand"],
     "manufacturer": ["manufacturer", "производитель"],
     "country": ["country of origin", "страна происхождения"],
     "unit": ["unit /", "единица измерения"],
-    "qty": ["q-ty", "кол-во в ед"],
-    "price": ["price usd", "цена долл"],
-    "amount": ["amount, usd", "стоимость, долл"],
-    "net_weight": ["net weight", "вес нетто", "вес  нетто"],
-    "gross_weight": ["gross weight", "вес брутто", "вес  брутто"],
-    "cll": ["number of units load", "кол-во мест"],
+    "qty": ["q-ty", "кол-во в ед", "кол-во", "количество", "qty"],
+    "price": ["price usd", "цена долл", "цена", "price"],
+    "amount": ["amount, usd", "стоимость, долл", "стоимость", "итого", "сумма", "amount"],
+    "net_weight": ["net weight", "вес нетто", "вес  нетто", "нетто вес", "нетто"],
+    "gross_weight": ["gross weight", "вес брутто", "вес  брутто", "гросс вес", "брутто", "gross"],
+    "cll": ["number of units load", "кол-во мест", "паллет", "пал"],
 }
 
 # Fields that get written into the template's certificate/declaration block.
@@ -147,10 +147,15 @@ def find_no_header(ws: Worksheet, max_scan_rows: int = 60, max_scan_cols: int = 
 def build_sheet_table(ws: Worksheet) -> SheetTable | None:
     header_row, no_col = find_no_header(ws)
     if header_row is None:
+        # Fallback: locate a header row by known field keywords (no № column).
+        header_row, no_col = _find_header_without_no(ws)
+    if header_row is None:
         return None
 
     max_col = ws.max_column
-    columns: dict[str, int] = {"no": no_col}
+    columns: dict[str, int] = {}
+    if no_col:
+        columns["no"] = no_col
     for c in range(1, max_col + 1):
         norm = normalize(ws.cell(row=header_row, column=c).value)
         if not norm:
@@ -162,27 +167,68 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
                 columns[fkey] = c
                 break
 
-    # Walk down the "no" column collecting item rows until the sequence
-    # breaks (blank / non-numeric for 2 rows in a row).
+    # Walk down collecting item rows.
     item_rows: dict[int, int] = {}
     blank_streak = 0
     r = header_row + 1
     max_row = ws.max_row
+    seq = 0
+    # Prefer № column; else use article/name presence.
+    anchor_col = columns.get("no") or columns.get("article") or columns.get("name")
+    if not anchor_col:
+        return None
+
     while r <= max_row:
-        val = ws.cell(row=r, column=no_col).value
-        if isinstance(val, (int, float)) and float(val).is_integer() and val > 0:
-            item_rows[int(val)] = r
-            blank_streak = 0
+        if "no" in columns:
+            val = ws.cell(row=r, column=columns["no"]).value
+            if isinstance(val, (int, float)) and float(val).is_integer() and val > 0:
+                item_rows[int(val)] = r
+                blank_streak = 0
+            else:
+                blank_streak += 1
+                if blank_streak >= 3:
+                    break
         else:
-            blank_streak += 1
-            if blank_streak >= 3:
-                break
+            art = ws.cell(row=r, column=anchor_col).value
+            if art not in (None, ""):
+                seq += 1
+                item_rows[seq] = r
+                blank_streak = 0
+            else:
+                blank_streak += 1
+                if blank_streak >= 3:
+                    break
         r += 1
 
     if not item_rows:
         return None
 
     return SheetTable(sheet_name=ws.title, header_row=header_row, columns=columns, item_rows=item_rows)
+
+
+def _find_header_without_no(ws: Worksheet, max_scan_rows: int = 60, max_scan_cols: int = 40):
+    """Find a header row that contains article/name/qty-like labels without a № column."""
+    max_row = min(ws.max_row, max_scan_rows)
+    max_col = min(ws.max_column, max_scan_cols)
+    keys = ("article", "name", "qty", "price", "amount", "net_weight")
+    best = None
+    best_score = 0
+    for r in range(1, max_row + 1):
+        hits = 0
+        for c in range(1, max_col + 1):
+            norm = normalize(ws.cell(row=r, column=c).value)
+            if not norm:
+                continue
+            for fkey in keys:
+                if any(kw in norm for kw in HEADER_KEYWORDS[fkey]):
+                    hits += 1
+                    break
+        if hits > best_score:
+            best_score = hits
+            best = r
+    if best_score >= 2:
+        return best, None
+    return None, None
 
 
 def find_cert_in_row(ws: Worksheet, row: int, max_col: int = 40) -> dict | None:
@@ -435,77 +481,6 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
 
 
 # --------------------------------------------------------------------------
-# AI-assisted template filling
-# --------------------------------------------------------------------------
-
-def fill_template_with_ai(
-    template_bytes: bytes,
-    items: dict[int, dict],
-    ai_mapping: dict[str, int],
-    settings: dict,
-) -> bytes:
-    """Fill template using AI-provided column mapping.
-    
-    ai_mapping: {"no": 1, "name": 3, "price": 5, ...}  (1-based column indices)
-    items: {row_no: {field: value, ...}}
-    """
-    wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
-    ws = wb.worksheets[0]
-
-    header_row, columns = find_template_table(ws)
-    data_start = header_row + 1
-
-    fixed_country = settings.get("country", "CN")
-    fixed_unit = settings.get("unit", "шт")
-
-    # Build reverse mapping: template column -> AI column
-    # template columns are already mapped by find_template_table
-    # We need to read from AI columns instead
-    
-    for i, item_no in enumerate(sorted(items.keys())):
-        rec = items[item_no]
-        row = data_start + i
-
-        def put(field_key, value):
-            col = columns.get(field_key)
-            if not col:
-                return
-            cell = ws.cell(row=row, column=col, value=value)
-            cell.font = DATA_FONT
-            cell.alignment = DATA_ALIGNMENT
-            numfmt = DATA_NUMBER_FORMATS.get(field_key)
-            if numfmt:
-                cell.number_format = numfmt
-
-        put("no", item_no)
-        put("tariff_code", rec.get("tariff_code"))
-        put("name", rec.get("name"))
-        put("article", rec.get("article"))
-        put("marks", rec.get("marks"))
-        put("manufacturer", rec.get("manufacturer"))
-        put("country", fixed_country)
-        put("unit", fixed_unit)
-        put("qty", rec.get("qty"))
-        put("price", rec.get("price"))
-        put("amount", rec.get("amount"))
-        put("net_weight", rec.get("net_weight"))
-        put("gross_weight", rec.get("gross_weight"))
-        put("cll", rec.get("cll"))
-        put("mnr", rec.get("mnr"))
-        put("date_from", rec.get("date_from"))
-        put("date_to", rec.get("date_to"))
-        put("mnr_code", rec.get("mnr_code"))
-        put("mnr2", rec.get("mnr2"))
-        put("date_from2", rec.get("date_from2"))
-        put("date_to2", rec.get("date_to2"))
-        put("mnr_code2", rec.get("mnr_code2"))
-
-    out = io.BytesIO()
-    wb.save(out)
-    return out.getvalue()
-
-
-# --------------------------------------------------------------------------
 # High-level entry point
 # --------------------------------------------------------------------------
 
@@ -520,6 +495,7 @@ def process(template_bytes: bytes, input_files: list[bytes], settings: dict | No
     result_bytes = fill_template(template_bytes, merged, settings)
 
     report = {
+        "mode": "keyword",
         "items_found": len(merged),
         "items": {no: {k: (str(v) if isinstance(v, datetime.datetime) else v) for k, v in rec.items()}
                   for no, rec in sorted(merged.items())},

@@ -648,133 +648,55 @@
     svhState.allResults = [];
   });
 
-  // ---- AI Chat (Yandex GPT) ----
-  var aiEl = {
-    messages: document.getElementById('aiMessages'),
-    input: document.getElementById('aiInput'),
-    sendBtn: document.getElementById('aiSendBtn'),
-    loading: document.getElementById('aiLoading'),
-    errorBox: document.getElementById('aiErrorBox'),
-  };
-  var aiSession = '';
-
-  function showAiError(msg) {
-    if (aiEl.errorBox) {
-      aiEl.errorBox.textContent = msg;
-      aiEl.errorBox.style.display = 'block';
-    }
-  }
-  function clearAiError() {
-    if (aiEl.errorBox) {
-      aiEl.errorBox.style.display = 'none';
-      aiEl.errorBox.textContent = '';
-    }
-  }
-
-  function addAiMessage(role, text) {
-    if (!aiEl.messages) return;
-    var div = document.createElement('div');
-    div.className = 'ai-msg ' + role;
-    div.textContent = text;
-    aiEl.messages.appendChild(div);
-    var box = document.getElementById('aiChatBox');
-    if (box) box.scrollTop = box.scrollHeight;
-  }
-
-  function doAiChat() {
-    var msg = (aiEl.input ? aiEl.input.value : '').trim();
-    if (!msg) return;
-
-    clearAiError();
-    addAiMessage('user', msg);
-    if (aiEl.input) aiEl.input.value = '';
-
-    if (aiEl.loading) aiEl.loading.style.display = 'flex';
-    if (aiEl.sendBtn) aiEl.sendBtn.disabled = true;
-
-    var body = { message: msg };
-    if (aiSession) body.session = aiSession;
-
-    fetch(API + '/api/ai/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    })
-      .then(function (res) { return res.json(); })
-      .then(function (data) {
-        if (aiEl.loading) aiEl.loading.style.display = 'none';
-        if (aiEl.sendBtn) aiEl.sendBtn.disabled = false;
-
-        if (data.error) {
-          showAiError(data.error);
-          return;
-        }
-        aiSession = data.session || aiSession;
-        addAiMessage('assistant', data.reply);
-      })
-      .catch(function (e) {
-        if (aiEl.loading) aiEl.loading.style.display = 'none';
-        if (aiEl.sendBtn) aiEl.sendBtn.disabled = false;
-        showAiError('Ошибка: ' + e.message);
-      });
-  }
-
-  if (aiEl.sendBtn) {
-    aiEl.sendBtn.addEventListener('click', doAiChat);
-  }
-  if (aiEl.input) {
-    aiEl.input.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); doAiChat(); }
-    });
-  }
-
-  // Welcome message
-  (function () {
-    var welcome = document.createElement('div');
-    welcome.className = 'ai-msg system';
-    welcome.textContent = '🤖 Привет! Я ИИ-ассистент по таможенным вопросам. Спрашивайте о декларировании, сертификатах, ТН ВЭД, СВХ и других таможенных процедурах.';
-    if (aiEl.messages) aiEl.messages.appendChild(welcome);
-  })();
-
-  // ---- AI Analyze (Keyword-based engine) ----
+  // ---- AI Analyze (YandexGPT column mapping) ----
   var aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
   if (aiAnalyzeBtn) {
     aiAnalyzeBtn.addEventListener('click', function () {
+      clearError();
       if (!inputFiles.length) {
         showError('Сначала загрузите входные файлы.');
         return;
       }
       aiAnalyzeBtn.disabled = true;
-      aiAnalyzeBtn.textContent = '📊 Анализ…';
+      var original = aiAnalyzeBtn.textContent;
+      aiAnalyzeBtn.textContent = 'ИИ анализирует…';
       setProgress(10);
+
+      var progressTimer = setInterval(function () {
+        var current = parseInt(el.progressLabel.textContent, 10) || 0;
+        if (current < 90) setProgress(current + 5);
+      }, 700);
 
       var fd = new FormData();
       inputFiles.forEach(function (f) { fd.append('inputs', f); });
       fd.append('country', el.countryInput.value.trim() || 'CN');
       fd.append('unit', el.unitInput.value.trim() || 'шт');
 
-      fetch(API + '/api/ai/analyze', {
-        method: 'POST',
-        body: fd,
-      })
+      fetch(API + '/api/ai/analyze', { method: 'POST', body: fd })
         .then(function (res) {
+          clearInterval(progressTimer);
           setProgress(100);
-          if (!res.ok) return res.json().then(function (d) { throw new Error(d.error || 'Ошибка'); });
-          return res.blob().then(function (blob) { return { blob: blob }; });
+          if (!res.ok) {
+            return res.json().then(function (d) { throw new Error(d.error || 'Ошибка ИИ-анализа'); });
+          }
+          return res.blob();
         })
-        .then(function (data) {
-          aiAnalyzeBtn.textContent = '📊 Анализ файлов';
-          aiAnalyzeBtn.disabled = false;
-          triggerDownload(data.blob, 'result.xlsx');
-          showResult(data.blob, 'result.xlsx');
+        .then(function (blob) {
+          triggerDownload(blob, 'result.xlsx');
+          showResult(blob, 'result.xlsx');
+          showErrorLog({ errors: [], warnings: [], unknown: [] });
+          if (el.errorLogSummary) {
+            el.errorLogSummary.textContent = 'Столбцы сопоставлены через YandexGPT, файл сформирован.';
+          }
         })
         .catch(function (e) {
-          showError('Анализ не удался: ' + e.message);
-          aiAnalyzeBtn.textContent = '📊 Анализ файлов';
-          aiAnalyzeBtn.disabled = false;
+          clearInterval(progressTimer);
+          showError('ИИ-анализ не удался: ' + e.message);
         })
         .finally(function () {
           hideProgress();
+          aiAnalyzeBtn.textContent = original;
+          aiAnalyzeBtn.disabled = false;
         });
     });
   }

@@ -2,20 +2,6 @@
 """FastAPI backend for the web build of ТаможенФормат.
 
 Serves both the API and the static frontend from a single process.
-
-Endpoints:
-  GET  /api/health                          -> {"ok": true}
-  GET  /api/template                        -> info about the currently stored template
-  GET  /api/template/download               -> download the currently stored template
-  POST /api/template                        -> upload/replace the stored template
-  POST /api/preview                         -> JSON report of what would be filled in
-  POST /api/process                         -> filled .xlsx as a download
-  POST /api/ai/analyze                      -> analyze Excel files and fill template
-  GET  /api/svh/search                      -> search SVH/TS registry ( Alta.ru )
-  GET  /api/svh/detail/{license}             -> detailed card for a specific SVH/TS
-  GET  /api/svh/all                         -> full registry with pagination
-  GET  /api/svh/cache/stats                 -> cache statistics
-  DELETE /api/svh/cache                     -> clear cache
 """
 import io
 import os
@@ -27,9 +13,6 @@ import traceback
 import datetime
 import time
 import sqlite3
-import urllib.request
-import urllib.error
-import openpyxl
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode
@@ -39,8 +22,10 @@ from contextlib import contextmanager
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import engine
+import ai_mapper
+import yandex_gpt
 
-from fastapi import FastAPI, UploadFile, File, Form, Query, Body
+from fastapi import FastAPI, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -51,102 +36,6 @@ TEMPLATE_PATH = os.path.join(DATA_DIR, "current_template.xlsx")
 DEFAULT_TEMPLATE_PATH = os.path.join(DATA_DIR, "default_template.xlsx")
 META_PATH = os.path.join(DATA_DIR, "template_meta.json")
 SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
-
-
-# ── AI Excel Analyzer endpoint ────────────────────────────────────────────
-
-@app.post("/api/ai/analyze")
-async def ai_analyze(
-    inputs: list[UploadFile] = File(...),
-    template: UploadFile | None = File(None),
-    country: str = Form("CN"),
-    unit: str = Form("шт"),
-):
-    """Analyze Excel files and fill template using keyword-based engine."""
-    try:
-        template_bytes = await _resolve_template(template)
-        input_bytes = await _read_all(inputs)
-    except ValueError as e:
-        return JSONResponse({"error": str(e)}, status_code=422)
-    
-    settings = {"country": country, "unit": unit}
-    result_bytes, report = await run_in_threadpool(engine.process, template_bytes, input_bytes, settings)
-    
-    print(f"[AI] Keyword engine found {report['items_found']} items")
-    
-    return StreamingResponse(
-        io.BytesIO(result_bytes),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="result.xlsx"'},
-    )
-    try:
-        with urlopen(auth_req, timeout=10) as auth_resp:
-            auth_body = json.loads(auth_resp.read().decode("utf-8"))
-        token = auth_body.get("iamToken", "")
-        if token:
-            return token
-    except urllib.error.HTTPError as e:
-        print(f"[AI] IAM token exchange failed: {e.code} - {e.read().decode('utf-8', errors='replace')[:200]}")
-    
-    # Fallback: try using the key directly as Authorization header
-    print("[AI] Trying API key directly as Bearer token")
-    return _YANDEX_API_KEY
-
-
-def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -> str:
-    """Call Yandex GPT API and return the assistant's reply."""
-    payload = json.dumps({
-        "modelUri": model_urn,
-        "messages": messages,
-    }).encode("utf-8")
-    
-    oauth_token = _get_iam_token()
-    if not oauth_token:
-        raise Exception("Failed to get OAuth token from Yandex IAM")
-    
-    req = Request(
-        YANDEX_GPT_API_URL,
-        data=payload,
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {oauth_token}",
-        },
-        method="POST",
-    )
-    try:
-        with urlopen(req, timeout=60) as resp:
-            body = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8") if e.fp else ""
-        raise Exception(f"Yandex GPT API error: {e.code} - {error_body}")
-    
-    # Yandex GPT response format
-    text = body.get("result", "").get("choices", [{}])[0].get("message", {}).get("text", "")
-    if not text:
-        text = body.get("text", "")
-    if not text:
-        text = json.dumps(body, ensure_ascii=False)
-    return text
-
-
-def _extract_excel_preview(content: bytes, max_rows: int = 20) -> str:
-    """Extract headers and first N rows from Excel file as TSV."""
-    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
-    ws = wb.worksheets[0]  # First sheet
-    lines = []
-    for r in range(1, min(ws.max_row + 1, max_rows + 1)):
-        row_data = []
-        for c in range(1, ws.max_column + 1):
-            val = ws.cell(row=r, column=c).value
-            if val is None:
-                row_data.append("")
-            elif isinstance(val, (int, float)):
-                row_data.append(str(val))
-            else:
-                row_data.append(str(val).replace("\t", " ").replace("\n", " "))
-        lines.append("\t".join(row_data))
-    return "\n".join(lines)
-
 
 if not os.path.exists(TEMPLATE_PATH) and os.path.exists(DEFAULT_TEMPLATE_PATH):
     shutil.copy(DEFAULT_TEMPLATE_PATH, TEMPLATE_PATH)
@@ -813,7 +702,12 @@ async def clear_svh_cache():
     return {"ok": True, "message": "Кэш очищен"}
 
 
-# ── AI Excel Analyzer endpoint ────────────────────────────────────────────
+# ── AI Excel column mapping (YandexGPT) ───────────────────────────────────
+
+@app.get("/api/ai/status")
+def ai_status():
+    return {"configured": yandex_gpt.is_configured()}
+
 
 @app.post("/api/ai/analyze")
 async def ai_analyze(
@@ -822,107 +716,50 @@ async def ai_analyze(
     country: str = Form("CN"),
     unit: str = Form("шт"),
 ):
-    """AI analyzes Excel files, finds columns by meaning, fills template.
-    Falls back to keyword-based engine if AI is unavailable."""
+    """YandexGPT сопоставляет столбцы по смыслу и заполняет шаблон."""
     try:
         template_bytes = await _resolve_template(template)
         input_bytes = await _read_all(inputs)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
-    
+    except FileNotFoundError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+
     settings = {"country": country, "unit": unit}
-    
-    # Check if AI is configured with valid model
-    ai_enabled = bool(_YANDEX_API_KEY and _YANDEX_MODEL_URN and "gpt://" in _YANDEX_MODEL_URN)
-    
-    if ai_enabled:
-        print(f"[AI] Starting AI analysis with model: {_YANDEX_MODEL_URN[:50]}...")
-        
-        # Extract preview from each file
-        file_previews: list[str] = []
-        for i, content in enumerate(input_bytes):
-            preview = _extract_excel_preview(content, max_rows=30)
-            file_previews.append(f"--- Файл {i+1} ---\n{preview}")
-        
-        user_content = "Файлы для анализа:\n\n" + "\n\n".join(file_previews)
-        
-        messages = [
-            {"role": "system", "content": _AI_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-        
+
+    if not yandex_gpt.is_configured():
+        return JSONResponse(
+            {
+                "error": "YandexGPT не настроен. Задайте YANDEX_API_KEY и YANDEX_FOLDER_ID в файле .env",
+            },
+            status_code=503,
+        )
+
+    try:
+        result_bytes, report = await run_in_threadpool(
+            ai_mapper.process_with_ai, template_bytes, input_bytes, settings
+        )
+    except Exception as e:
+        traceback.print_exc()
+        # Fallback to keyword engine
         try:
-            ai_reply = await run_in_threadpool(_call_yandex_gpt, messages)
-            print(f"[AI] AI reply received (first 200 chars): {ai_reply[:200]}")
-            
-            # Parse AI response
-            try:
-                ai_text = ai_reply.strip()
-                if "```json" in ai_text:
-                    ai_text = ai_text.split("```json")[1].split("```")[0]
-                elif "```" in ai_text:
-                    ai_text = ai_text.split("```")[1].split("```")[0]
-                
-                ai_data = json.loads(ai_text)
-                mapping = ai_data.get("mapping", {})
-                items_list = ai_data.get("items", [])
-                certificates = ai_data.get("certificates", [])
-                
-                print(f"[AI] Parsed: mapping={len(mapping)} fields, {len(items_list)} items, {len(certificates)} certs")
-                
-                # Build items dict for engine
-                items_dict: dict[int, dict] = {}
-                for item in items_list:
-                    row_no = item.get("row")
-                    if row_no:
-                        items_dict[row_no] = {k: v for k, v in item.items() if k not in ("row", "no")}
-                        if "no" in item:
-                            items_dict[row_no]["no"] = item["no"]
-                
-                # Add certificates if found
-                for cert in certificates:
-                    if cert.get("mnr"):
-                        for no, rec in items_dict.items():
-                            if not rec.get("mnr"):
-                                rec["mnr"] = cert["mnr"]
-                                if cert.get("date_from"):
-                                    rec["date_from"] = cert["date_from"]
-                                if cert.get("date_to"):
-                                    rec["date_to"] = cert["date_to"]
-                                if cert.get("mnr_code"):
-                                    rec["mnr_code"] = cert["mnr_code"]
-                                break
-                
-                # Fill template using AI mapping
-                result_bytes = engine.fill_template_with_ai(template_bytes, items_dict, mapping, settings)
-                print(f"[AI] AI result generated with {len(items_dict)} items")
-                
-                return StreamingResponse(
-                    io.BytesIO(result_bytes),
-                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    headers={"Content-Disposition": 'attachment; filename="ai_result.xlsx"'},
-                )
-            except json.JSONDecodeError as e:
-                print(f"[AI] JSON parse error: {e}, raw reply: {ai_reply[:300]}")
-            except Exception as e:
-                print(f"[AI] AI processing error: {e}, traceback:")
-                traceback.print_exc()
-        except Exception as e:
-            print(f"[AI] API call error: {e}, traceback:")
+            result_bytes, report = await run_in_threadpool(
+                engine.process, template_bytes, input_bytes, settings
+            )
+            report = {**report, "mode": "keyword_fallback", "ai_error": str(e)}
+        except Exception as e2:
             traceback.print_exc()
-    
-    # Fallback: use existing keyword-based engine
-    print("[AI] Using keyword-based engine (fallback)")
-    result_bytes, report = await run_in_threadpool(engine.process, template_bytes, input_bytes, settings)
-    print(f"[AI] Keyword engine found {report['items_found']} items")
-    
+            return JSONResponse({"error": str(e2)}, status_code=500)
+
+    headers = {
+        "Content-Disposition": 'attachment; filename="result.xlsx"',
+        "X-Items-Found": str(report.get("items_found", 0)),
+        "X-AI-Mode": str(report.get("mode", "ai")),
+    }
     return StreamingResponse(
         io.BytesIO(result_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": 'attachment; filename="result.xlsx"',
-            "X-AI-Mode": "fallback",
-        },
+        headers=headers,
     )
 
 
