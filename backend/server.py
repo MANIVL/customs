@@ -10,7 +10,7 @@ Endpoints:
   POST /api/template                        -> upload/replace the stored template
   POST /api/preview                         -> JSON report of what would be filled in
   POST /api/process                         -> filled .xlsx as a download
-  POST /api/ai/analyze                      -> AI analyzes Excel files and fills template
+  POST /api/ai/analyze                      -> analyze Excel files and fill template
   GET  /api/svh/search                      -> search SVH/TS registry ( Alta.ru )
   GET  /api/svh/detail/{license}             -> detailed card for a specific SVH/TS
   GET  /api/svh/all                         -> full registry with pagination
@@ -52,83 +52,32 @@ DEFAULT_TEMPLATE_PATH = os.path.join(DATA_DIR, "default_template.xlsx")
 META_PATH = os.path.join(DATA_DIR, "template_meta.json")
 SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
 
-# ── Yandex GPT (YandexCloud) ──────────────────────────────────────────────
-YANDEX_GPT_API_URL = "https://llm.api.cloud.yandex.net/llm/v1/completion"
-_YANDEX_API_KEY = os.environ.get("YANDEX_GPT_API_KEY")
-_YANDEX_MODEL_URN = os.environ.get("YANDEX_MODEL_URN", "")
 
-# System prompt: AI Excel analyzer
-_AI_SYSTEM_PROMPT = """Ты — эксперт по анализу Excel-файлов для таможенного декларирования.
-Твоя задача: проанализировать загруженные Excel-файлы (инвойс, спецификация, пакинг и т.п.)
-и найти в них нужные столбцы для заполнения эталонного шаблона.
+# ── AI Excel Analyzer endpoint ────────────────────────────────────────────
 
-Canonical поля шаблона:
-- no: номер позиции (№ строки, № позиции)
-- tariff_code: код ТН ВЭД
-- name: наименование товара
-- article: артикул
-- marks: торговая марка
-- manufacturer: производитель
-- country: страна происхождения
-- unit: единица измерения (шт, кг, л и т.п.)
-- qty: количество в единицах
-- price: цена за единицу (USD)
-- amount: общая стоимость (USD)
-- net_weight: вес нетто
-- gross_weight: вес брутто
-- cll: количество мест
-- mnr: номер сертификата/декларации (МНР)
-- date_from: дата выдачи сертификата
-- date_to: дата окончания сертификата
-- mnr_code: код МНР (01401, 01402, 01408, 01206)
-- mnr2: второй сертификат (свидетельство о гос. регистрации)
-- date_from2: дата выдачи второго сертификата
-- date_to2: дата окончания второго сертификата
-- mnr_code2: код второго сертификата
-
-Верни JSON строго в таком формате:
-{
-  "mapping": {
-    "no": 1,
-    "name": 3,
-    "price": 5,
-    ...
-  },
-  "items": [
-    {"row": 2, "no": 1, "name": "...", "price": 10.50, ...},
-    {"row": 3, "no": 2, "name": "...", "price": 20.00, ...}
-  ],
-  "certificates": [
-    {"mnr": "...", "date_from": "DD.MM.YYYY", "date_to": "DD.MM.YYYY", "mnr_code": "01401"},
-    ...
-  ]
-}
-
-Если какое-то поле не найдено — не включай его в mapping.
-items — это список строк с данными товаров (минимум 1).
-certificates — список найденных сертификатов/деклараций.
-"""
-
-# In-memory session state
-_ai_sessions: dict[str, dict] = {}
-
-
-# ── Yandex GPT helper ─────────────────────────────────────────────────────
-
-def _get_iam_token() -> str:
-    """Exchange API key for OAuth token via Yandex IAM.
-    If API key is already an OAuth token, return it directly."""
-    # Check if key looks like an OAuth token (starts with Yada...)
-    if _YANDEX_API_KEY.startswith("Yada"):
-        return _YANDEX_API_KEY
+@app.post("/api/ai/analyze")
+async def ai_analyze(
+    inputs: list[UploadFile] = File(...),
+    template: UploadFile | None = File(None),
+    country: str = Form("CN"),
+    unit: str = Form("шт"),
+):
+    """Analyze Excel files and fill template using keyword-based engine."""
+    try:
+        template_bytes = await _resolve_template(template)
+        input_bytes = await _read_all(inputs)
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
     
-    # Try to exchange for OAuth token
-    auth_payload = json.dumps({"api_key": _YANDEX_API_KEY}).encode("utf-8")
-    auth_req = Request(
-        "https://iam.api.cloud.yandex.net/iam/v1/tokens",
-        data=auth_payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
+    settings = {"country": country, "unit": unit}
+    result_bytes, report = await run_in_threadpool(engine.process, template_bytes, input_bytes, settings)
+    
+    print(f"[AI] Keyword engine found {report['items_found']} items")
+    
+    return StreamingResponse(
+        io.BytesIO(result_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="result.xlsx"'},
     )
     try:
         with urlopen(auth_req, timeout=10) as auth_resp:
