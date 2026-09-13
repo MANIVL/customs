@@ -116,7 +116,13 @@ _ai_sessions: dict[str, dict] = {}
 # ── Yandex GPT helper ─────────────────────────────────────────────────────
 
 def _get_iam_token() -> str:
-    """Exchange API key for OAuth token via Yandex IAM."""
+    """Exchange API key for OAuth token via Yandex IAM.
+    If API key is already an OAuth token, return it directly."""
+    # Check if key looks like an OAuth token (starts with Yada...)
+    if _YANDEX_API_KEY.startswith("Yada"):
+        return _YANDEX_API_KEY
+    
+    # Try to exchange for OAuth token
     auth_payload = json.dumps({"api_key": _YANDEX_API_KEY}).encode("utf-8")
     auth_req = Request(
         "https://iam.api.cloud.yandex.net/iam/v1/tokens",
@@ -124,9 +130,18 @@ def _get_iam_token() -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urlopen(auth_req, timeout=10) as auth_resp:
-        auth_body = json.loads(auth_resp.read().decode("utf-8"))
-    return auth_body.get("iamToken", "")
+    try:
+        with urlopen(auth_req, timeout=10) as auth_resp:
+            auth_body = json.loads(auth_resp.read().decode("utf-8"))
+        token = auth_body.get("iamToken", "")
+        if token:
+            return token
+    except urllib.error.HTTPError as e:
+        print(f"[AI] IAM token exchange failed: {e.code} - {e.read().decode('utf-8', errors='replace')[:200]}")
+    
+    # Fallback: try using the key directly as Authorization header
+    print("[AI] Trying API key directly as Bearer token")
+    return _YANDEX_API_KEY
 
 
 def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -> str:
