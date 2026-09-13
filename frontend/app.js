@@ -648,6 +648,94 @@
     svhState.allResults = [];
   });
 
+  // ---- AI Chat (Yandex GPT) ----
+  var aiEl = {
+    messages: document.getElementById('aiMessages'),
+    input: document.getElementById('aiInput'),
+    sendBtn: document.getElementById('aiSendBtn'),
+    loading: document.getElementById('aiLoading'),
+    errorBox: document.getElementById('aiErrorBox'),
+  };
+  var aiSession = '';
+
+  function showAiError(msg) {
+    if (aiEl.errorBox) {
+      aiEl.errorBox.textContent = msg;
+      aiEl.errorBox.style.display = 'block';
+    }
+  }
+  function clearAiError() {
+    if (aiEl.errorBox) {
+      aiEl.errorBox.style.display = 'none';
+      aiEl.errorBox.textContent = '';
+    }
+  }
+
+  function addAiMessage(role, text) {
+    if (!aiEl.messages) return;
+    var div = document.createElement('div');
+    div.className = 'ai-msg ' + role;
+    div.textContent = text;
+    aiEl.messages.appendChild(div);
+    var box = document.getElementById('aiChatBox');
+    if (box) box.scrollTop = box.scrollHeight;
+  }
+
+  function doAiChat() {
+    var msg = (aiEl.input ? aiEl.input.value : '').trim();
+    if (!msg) return;
+
+    clearAiError();
+    addAiMessage('user', msg);
+    if (aiEl.input) aiEl.input.value = '';
+
+    if (aiEl.loading) aiEl.loading.style.display = 'flex';
+    if (aiEl.sendBtn) aiEl.sendBtn.disabled = true;
+
+    var body = { message: msg };
+    if (aiSession) body.session = aiSession;
+
+    fetch(API + '/api/ai/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        if (aiEl.loading) aiEl.loading.style.display = 'none';
+        if (aiEl.sendBtn) aiEl.sendBtn.disabled = false;
+
+        if (data.error) {
+          showAiError(data.error);
+          return;
+        }
+        aiSession = data.session || aiSession;
+        addAiMessage('assistant', data.reply);
+      })
+      .catch(function (e) {
+        if (aiEl.loading) aiEl.loading.style.display = 'none';
+        if (aiEl.sendBtn) aiEl.sendBtn.disabled = false;
+        showAiError('Ошибка: ' + e.message);
+      });
+  }
+
+  if (aiEl.sendBtn) {
+    aiEl.sendBtn.addEventListener('click', doAiChat);
+  }
+  if (aiEl.input) {
+    aiEl.input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doAiChat(); }
+    });
+  }
+
+  // Welcome message
+  (function () {
+    var welcome = document.createElement('div');
+    welcome.className = 'ai-msg system';
+    welcome.textContent = '🤖 Привет! Я ИИ-ассистент по таможенным вопросам. Спрашивайте о декларировании, сертификатах, ТН ВЭД, СВХ и других таможенных процедурах.';
+    if (aiEl.messages) aiEl.messages.appendChild(welcome);
+  })();
+
   // ---- Инициализация ----
   loadTemplateInfo();
 })();

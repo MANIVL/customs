@@ -555,3 +555,67 @@ footer {
   opacity: 0.4;
   cursor: not-allowed;
 }
+
+/* === AI Chat === */
+.ai-chat-box {
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-surface-2);
+  max-height: 420px;
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.ai-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.ai-msg {
+  max-width: 85%;
+  padding: 10px 14px;
+  border-radius: 12px;
+  font-size: 14px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.ai-msg.user {
+  align-self: flex-end;
+  background: var(--color-primary);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.ai-msg.assistant {
+  align-self: flex-start;
+  background: var(--color-surface-offset);
+  color: var(--color-text);
+  border-bottom-left-radius: 4px;
+}
+.ai-msg.system {
+  align-self: center;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  text-align: center;
+  max-width: 100%;
+}
+
+.ai-input-row {
+  display: flex;
+  gap: 8px;
+}
+.ai-input-row input {
+  flex: 1;
+}
+
+.ai-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--color-text-muted);
+  font-size: 13px;
+}

@@ -15,6 +15,7 @@ Endpoints:
   GET  /api/svh/all                         -> full registry with pagination
   GET  /api/svh/cache/stats                 -> cache statistics
   DELETE /api/svh/cache                     -> clear cache
+  POST /api/ai/chat                         -> chat with Yandex GPT assistant
 """
 import io
 import os
@@ -26,6 +27,8 @@ import traceback
 import datetime
 import time
 import sqlite3
+import urllib.request
+import urllib.error
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlencode
@@ -47,6 +50,84 @@ TEMPLATE_PATH = os.path.join(DATA_DIR, "current_template.xlsx")
 DEFAULT_TEMPLATE_PATH = os.path.join(DATA_DIR, "default_template.xlsx")
 META_PATH = os.path.join(DATA_DIR, "template_meta.json")
 SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
+
+# ── Yandex GPT (YandexCloud) ──────────────────────────────────────────────
+YANDEX_GPT_API_URL = "https://llm.api.cloud.yandex.net/llm/v1alpha/chat"
+_YANDEX_API_KEY = os.environ.get("YANDEX_GPT_API_KEY")
+_YANDEX_MODEL_URN = os.environ.get("YANDEX_MODEL_URN", "gpt://b1g9m7q1q3s2t4u5v6w/yandexgpt-lite")
+
+# System prompt: customs expert
+SYSTEM_PROMPT = (
+    "Ты — эксперт по таможенному делу, ВЭД и документообороту. "
+    "Помогаешь декларантам и участникам ВЭД: объясняешь процедуры, "
+    "помогаешь с сертификатами соответствия (МНР), ТН ВЭД, "
+    "списком необходимых документов, таможенными складами (СВХ). "
+    "Отвечай кратко, по делу, на русском языке. "
+    "Если не уверен в ответе — скажи об этом."
+)
+
+# In-memory conversation history per session
+_chat_history: dict[str, list[dict]] = {}
+
+
+# ── Yandex GPT helper ─────────────────────────────────────────────────────
+
+def _call_yandex_gpt(messages: list[dict], model_urn: str = _YANDEX_MODEL_URN) -> str:
+    """Call Yandex GPT API and return the assistant's reply."""
+    payload = json.dumps({
+        "modelUri": model_urn,
+        "messages": messages,
+    }).encode("utf-8")
+    req = Request(
+        YANDEX_GPT_API_URL,
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Api-Key {_YANDEX_API_KEY}",
+        },
+        method="POST",
+    )
+    with urlopen(req, timeout=60) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    # Yandex GPT response format
+    text = body.get("result", "").get("choices", [{}])[0].get("message", {}).get("text", "")
+    if not text:
+        text = json.dumps(body, ensure_ascii=False)  # fallback: return raw
+    return text
+
+
+# ── Yandex GPT chat endpoint ──────────────────────────────────────────────
+
+@app.post("/api/ai/chat")
+async def ai_chat(
+    message: str = "",
+    session: str = "",
+):
+    """Chat with Yandex GPT assistant. Returns AI response."""
+    if not message.strip():
+        return JSONResponse({"error": "Введите сообщение"}, status_code=422)
+
+    # Generate or reuse session ID
+    if not session:
+        session = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    # Build messages list (system + history + new message)
+    history = _chat_history.get(session, [])
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history + [{"role": "user", "content": message}]
+
+    try:
+        reply = await run_in_threadpool(_call_yandex_gpt, messages)
+        # Save conversation history (last 20 messages to avoid unbounded growth)
+        history.append({"role": "user", "content": message})
+        history.append({"role": "assistant", "content": reply})
+        _chat_history[session] = history[-20:]
+        return {
+            "reply": reply,
+            "session": session,
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": f"Ошибка Yandex GPT: {e}"}, status_code=502)
 
 if not os.path.exists(TEMPLATE_PATH) and os.path.exists(DEFAULT_TEMPLATE_PATH):
     shutil.copy(DEFAULT_TEMPLATE_PATH, TEMPLATE_PATH)

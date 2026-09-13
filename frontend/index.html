@@ -26,6 +26,7 @@
       <div class="tabs">
         <button class="tab active" data-tab="process" type="button">Обработка файлов</button>
         <button class="tab" data-tab="svh" type="button">Поиск СВХ</button>
+        <button class="tab" data-tab="ai" type="button">ИИ-ассистент</button>
       </div>
 
       <!-- Tab: Process -->
@@ -235,6 +236,41 @@
       </section>
       </div>
       <!-- /tab-svh -->
+
+      <!-- Tab: AI Chat -->
+      <div class="tab-content" id="tab-ai">
+      <section class="hero">
+        <h1>ИИ-ассистент по таможенным вопросам</h1>
+        <p>
+          Спросите anything о декларировании, сертификатах, ТН ВЭД, СВХ и других таможенных процедурах.
+        </p>
+      </section>
+
+      <section class="steps">
+        <article class="card">
+          <div class="card-head">
+            <div class="step-num">💬</div>
+            <h2>Чат с ИИ</h2>
+          </div>
+
+          <div id="aiChatBox" class="ai-chat-box">
+            <div id="aiMessages" class="ai-messages"></div>
+            <div id="aiLoading" class="ai-loading" style="display:none;">
+              <div class="svh-spinner"></div>
+              <span>Думаю…</span>
+            </div>
+          </div>
+
+          <div class="ai-input-row">
+            <input id="aiInput" type="text" placeholder="Введите ваш вопрос…" />
+            <button id="aiSendBtn" type="button" class="btn btn-primary">Отправить</button>
+          </div>
+
+          <div id="aiErrorBox" class="error-box" style="display:none;"></div>
+        </article>
+      </section>
+      </div>
+      <!-- /tab-ai -->
     </div>
   </main>
 
