@@ -736,7 +736,7 @@
     if (aiEl.messages) aiEl.messages.appendChild(welcome);
   })();
 
-  // ---- AI Analyze (Yandex GPT) ----
+  // ---- AI Analyze (Keyword-based engine) ----
   var aiAnalyzeBtn = document.getElementById('aiAnalyzeBtn');
   if (aiAnalyzeBtn) {
     aiAnalyzeBtn.addEventListener('click', function () {
@@ -745,7 +745,7 @@
         return;
       }
       aiAnalyzeBtn.disabled = true;
-      aiAnalyzeBtn.textContent = '🤖 ИИ анализирует…';
+      aiAnalyzeBtn.textContent = '📊 Анализ…';
       setProgress(10);
 
       var fd = new FormData();
@@ -763,16 +763,14 @@
           return res.blob().then(function (blob) { return { blob: blob }; });
         })
         .then(function (data) {
-          var filename = 'ai_result.xlsx';
-          // Check if fallback mode (X-AI-Mode header might not be accessible in browser)
-          aiAnalyzeBtn.textContent = '🤖 ИИ-анализ файлов';
+          aiAnalyzeBtn.textContent = '📊 Анализ файлов';
           aiAnalyzeBtn.disabled = false;
-          triggerDownload(data.blob, filename);
-          showResult(data.blob, filename);
+          triggerDownload(data.blob, 'result.xlsx');
+          showResult(data.blob, 'result.xlsx');
         })
         .catch(function (e) {
-          showError('ИИ-анализ не удался: ' + e.message + '. Используется стандартный режим.');
-          aiAnalyzeBtn.textContent = '🤖 ИИ-анализ файлов';
+          showError('Анализ не удался: ' + e.message);
+          aiAnalyzeBtn.textContent = '📊 Анализ файлов';
           aiAnalyzeBtn.disabled = false;
         })
         .finally(function () {
