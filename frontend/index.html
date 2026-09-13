@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ТаможенФормат</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <div class="brand-mark">TF</div>
+        <div>
+          <div class="brand-name">ТаможенФормат</div>
+          <div class="brand-sub">Заполненный шаблон по входным Excel‑файлам</div>
+        </div>
+      </div>
+      <button class="theme-toggle" type="button" data-theme-toggle aria-label="Переключить тему"></button>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <section class="hero">
+        <h1>Загрузите входные файлы — получите готовый шаблон</h1>
+        <p>
+          Приложение автоматически находит нужные столбцы во входных Excel‑файлах,
+          классифицирует сертификаты соответствия и подставляет данные в эталонный шаблон.
+        </p>
+      </section>
+
+      <section class="steps">
+        <!-- Шаг 1: Эталонный шаблон -->
+        <article class="card">
+          <div class="card-head">
+            <div class="step-num">1</div>
+            <h2>Эталонный шаблон</h2>
+          </div>
+          <p class="card-desc">
+            Столбцы шаблона фиксированы и не меняются. По умолчанию используется сохранённый шаблон —
+            при необходимости замените его своим файлом.
+          </p>
+
+          <div class="template-row">
+            <div class="template-info">
+              <div class="template-name" id="tplName">Загрузка…</div>
+              <div class="template-meta" id="tplMeta"></div>
+            </div>
+            <div class="template-actions">
+              <button id="tplDownloadBtn" type="button" class="btn btn-ghost" disabled>Скачать шаблон</button>
+              <button id="tplReplaceBtn" type="button" class="btn btn-primary">Заменить шаблон</button>
+              <input id="tplFileInput" type="file" accept=".xlsx" style="display:none" />
+            </div>
+          </div>
+        </article>
+
+        <!-- Шаг 2: Входные файлы -->
+        <article class="card">
+          <div class="card-head">
+            <div class="step-num">2</div>
+            <h2>Входные файлы</h2>
+          </div>
+          <p class="card-desc">
+            Загрузите один или несколько файлов с данными (инвойс, спецификация, упаковочный лист и т.п.).
+            Структура и порядок столбцов во входных файлах могут отличаться — система ищет их по заголовкам.
+          </p>
+
+          <div id="dropzone" class="dropzone" tabindex="0">
+            <div class="dz-title">Перетащите файлы сюда или нажмите, чтобы выбрать</div>
+            <div class="dz-sub">.xlsx — можно выбрать несколько файлов сразу</div>
+            <input id="inputFiles" type="file" multiple />
+          </div>
+
+          <ul id="fileList" class="file-list"></ul>
+        </article>
+
+        <!-- Шаг 3: Настройки -->
+        <article class="card">
+          <div class="card-head">
+            <div class="step-num">3</div>
+            <h2>Настройки</h2>
+          </div>
+          <p class="card-desc">
+            Страна происхождения и единица измерения подставляются фиксированным значением для всех строк.
+          </p>
+
+          <div class="settings-grid">
+            <div class="field">
+              <label for="countryInput">Страна происхождения</label>
+              <input id="countryInput" type="text" value="CN" />
+            </div>
+            <div class="field">
+              <label for="unitInput">Единица измерения</label>
+              <input id="unitInput" type="text" value="шт" />
+            </div>
+          </div>
+
+          <div class="rules-note">
+            <p>Код МНР определяется автоматически по тексту сертификата, например:</p>
+            <p><code>ЕАЭС RU С‑…</code> → <strong>01401</strong>, <code>ЕАЭС N RU Д‑…</code> → <strong>01402</strong>, <code>РОСС RU Д‑…</code> → <strong>01408</strong>, любой другой номер → <strong>01206</strong>.</p>
+            <p>Если в строке найдено два документа, они записываются в два блока шаблона.</p>
+          </div>
+        </article>
+
+        <!-- Шаг 4: Обработка и выгрузка -->
+        <article class="card">
+          <div class="card-head">
+            <div class="step-num">4</div>
+            <h2>Обработка и выгрузка файла</h2>
+          </div>
+
+          <div class="actions-row">
+            <button id="downloadBtn" type="button" class="btn btn-primary">Скачать готовый файл</button>
+          </div>
+
+          <div id="resultBox" class="result-box" hidden>
+            <div class="template-info">
+              <div class="template-name" id="resultName">result.xlsx</div>
+              <div class="template-meta" id="resultMeta"></div>
+            </div>
+            <div class="template-actions">
+              <button id="resultDownloadBtn" type="button" class="btn btn-ghost">Скачать ещё раз</button>
+              <button id="resultDeleteBtn" type="button" class="btn btn-ghost">Удалить готовый файл</button>
+            </div>
+          </div>
+
+          <!-- Прогресс подготовки файла -->
+          <div id="progressBar" class="progress" style="display:none;">
+            <div id="progressFill" class="progress-fill"></div>
+            <span id="progressLabel" class="progress-label">0%</span>
+          </div>
+
+          <!-- Краткое сообщение об ошибке -->
+          <div id="errorBox" class="error-box" style="display:none;"></div>
+
+          <!-- Протокол ошибок -->
+          <div id="errorLog" class="error-log" style="display:none;">
+            <h3>Протокол ошибок</h3>
+            <ul id="errorLogList"></ul>
+            <div id="errorLogSummary" class="error-log-summary"></div>
+          </div>
+        </article>
+      </section>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      ТаможенФормат · Веб‑версия
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
