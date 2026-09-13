@@ -866,10 +866,14 @@ async def ai_analyze(
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     
-    # Check if AI is configured
-    ai_enabled = bool(_YANDEX_API_KEY and _YANDEX_MODEL_URN)
+    settings = {"country": country, "unit": unit}
+    
+    # Check if AI is configured with valid model
+    ai_enabled = bool(_YANDEX_API_KEY and _YANDEX_MODEL_URN and "gpt://" in _YANDEX_MODEL_URN)
     
     if ai_enabled:
+        print(f"[AI] Starting AI analysis with model: {_YANDEX_MODEL_URN[:50]}...")
+        
         # Extract preview from each file
         file_previews: list[str] = []
         for i, content in enumerate(input_bytes):
@@ -885,6 +889,7 @@ async def ai_analyze(
         
         try:
             ai_reply = await run_in_threadpool(_call_yandex_gpt, messages)
+            print(f"[AI] AI reply received (first 200 chars): {ai_reply[:200]}")
             
             # Parse AI response
             try:
@@ -898,6 +903,8 @@ async def ai_analyze(
                 mapping = ai_data.get("mapping", {})
                 items_list = ai_data.get("items", [])
                 certificates = ai_data.get("certificates", [])
+                
+                print(f"[AI] Parsed: mapping={len(mapping)} fields, {len(items_list)} items, {len(certificates)} certs")
                 
                 # Build items dict for engine
                 items_dict: dict[int, dict] = {}
@@ -923,8 +930,8 @@ async def ai_analyze(
                                 break
                 
                 # Fill template using AI mapping
-                settings = {"country": country, "unit": unit}
                 result_bytes = engine.fill_template_with_ai(template_bytes, items_dict, mapping, settings)
+                print(f"[AI] AI result generated with {len(items_dict)} items")
                 
                 return StreamingResponse(
                     io.BytesIO(result_bytes),
@@ -932,16 +939,18 @@ async def ai_analyze(
                     headers={"Content-Disposition": 'attachment; filename="ai_result.xlsx"'},
                 )
             except json.JSONDecodeError as e:
-                print(f"[AI] JSON parse error: {e}, falling back to keyword engine")
+                print(f"[AI] JSON parse error: {e}, raw reply: {ai_reply[:300]}")
             except Exception as e:
-                print(f"[AI] AI processing error: {e}, falling back to keyword engine")
+                print(f"[AI] AI processing error: {e}, traceback:")
+                traceback.print_exc()
         except Exception as e:
-            print(f"[AI] API call error: {e}, falling back to keyword engine")
+            print(f"[AI] API call error: {e}, traceback:")
+            traceback.print_exc()
     
     # Fallback: use existing keyword-based engine
     print("[AI] Using keyword-based engine (fallback)")
-    settings = {"country": country, "unit": unit}
     result_bytes, report = await run_in_threadpool(engine.process, template_bytes, input_bytes, settings)
+    print(f"[AI] Keyword engine found {report['items_found']} items")
     
     return StreamingResponse(
         io.BytesIO(result_bytes),
