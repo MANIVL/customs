@@ -4,27 +4,39 @@
 Serves both the API and the static frontend from a single process.
 
 Endpoints:
-  GET  /api/health             -> {"ok": true}
-  GET  /api/template           -> info about the currently stored template
-  GET  /api/template/download  -> download the currently stored template
-  POST /api/template           -> upload/replace the stored template
-  POST /api/preview            -> JSON report of what would be filled in
-  POST /api/process            -> filled .xlsx as a download
+  GET  /api/health                          -> {"ok": true}
+  GET  /api/template                        -> info about the currently stored template
+  GET  /api/template/download               -> download the currently stored template
+  POST /api/template                        -> upload/replace the stored template
+  POST /api/preview                         -> JSON report of what would be filled in
+  POST /api/process                         -> filled .xlsx as a download
+  GET  /api/svh/search                      -> search SVH/TS registry ( Alta.ru )
+  GET  /api/svh/detail/{license}             -> detailed card for a specific SVH/TS
+  GET  /api/svh/all                         -> full registry with pagination
+  GET  /api/svh/cache/stats                 -> cache statistics
+  DELETE /api/svh/cache                     -> clear cache
 """
 import io
 import os
 import sys
 import json
 import shutil
+import re
 import traceback
 import datetime
+import time
+import sqlite3
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from contextlib import contextmanager
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
 import engine
 
-from fastapi import FastAPI, UploadFile, File, Form
+from fastapi import FastAPI, UploadFile, File, Form, Query
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -34,6 +46,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 TEMPLATE_PATH = os.path.join(DATA_DIR, "current_template.xlsx")
 DEFAULT_TEMPLATE_PATH = os.path.join(DATA_DIR, "default_template.xlsx")
 META_PATH = os.path.join(DATA_DIR, "template_meta.json")
+SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
 
 if not os.path.exists(TEMPLATE_PATH) and os.path.exists(DEFAULT_TEMPLATE_PATH):
     shutil.copy(DEFAULT_TEMPLATE_PATH, TEMPLATE_PATH)
@@ -51,6 +64,97 @@ app = FastAPI(title="ТаможенФормат")
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB per file
 MAX_FILES = 30
+ALTA_SVH_SEARCH_URL = "https://www.alta.ru/svh/search/"
+ALTA_SVH_DETAIL_URL = "https://www.alta.ru/svh/"
+
+# ── SQLite cache ──────────────────────────────────────────────────────────
+
+def _get_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(SVH_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+def _init_db():
+    with _get_db() as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS svh_search (
+                query_key   TEXT PRIMARY KEY,
+                results     TEXT NOT NULL,
+                fetched_at  REAL NOT NULL
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS svh_detail (
+                license_key TEXT PRIMARY KEY,
+                data        TEXT NOT NULL,
+                fetched_at  REAL NOT NULL
+            )
+        """)
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS svh_page (
+                page_num    INTEGER PRIMARY KEY,
+                html        BLOB NOT NULL,
+                fetched_at  REAL NOT NULL
+            )
+        """)
+        db.commit()
+
+_init_db()
+
+@contextmanager
+def _db():
+    conn = _get_db()
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
+
+def _cache_get_search(query_key: str) -> list[dict] | None:
+    with _db() as db:
+        row = db.execute("SELECT results, fetched_at FROM svh_search WHERE query_key = ?", (query_key,)).fetchone()
+    if row and (time.monotonic() - row["fetched_at"]) < 120:
+        return json.loads(row["results"])
+    return None
+
+def _cache_set_search(query_key: str, results: list[dict]):
+    with _db() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO svh_search (query_key, results, fetched_at) VALUES (?, ?, ?)",
+            (query_key, json.dumps(results, ensure_ascii=False), time.monotonic()),
+        )
+
+def _cache_get_detail(license_key: str) -> dict | None:
+    with _db() as db:
+        row = db.execute("SELECT data, fetched_at FROM svh_detail WHERE license_key = ?", (license_key,)).fetchone()
+    if row and (time.monotonic() - row["fetched_at"]) < 300:
+        return json.loads(row["data"])
+    return None
+
+def _cache_set_detail(license_key: str, data: dict):
+    with _db() as db:
+        db.execute(
+            "INSERT OR REPLACE INTO svh_detail (license_key, data, fetched_at) VALUES (?, ?, ?)",
+            (license_key, json.dumps(data, ensure_ascii=False), time.monotonic()),
+        )
+
+def _cache_clear():
+    with _db() as db:
+        db.execute("DELETE FROM svh_search")
+        db.execute("DELETE FROM svh_detail")
+        db.execute("DELETE FROM svh_page")
+
+def _cache_stats() -> dict:
+    with _db() as db:
+        s = db.execute("SELECT COUNT(*) AS c FROM svh_search").fetchone()["c"]
+        d = db.execute("SELECT COUNT(*) AS c FROM svh_detail").fetchone()["c"]
+        p = db.execute("SELECT COUNT(*) AS c FROM svh_page").fetchone()["c"]
+    return {"search_entries": s, "detail_entries": d, "page_entries": p, "total": s + d + p}
+
+# ── In-memory short cache (fallback for fast repeated queries) ──
+_svh_mem_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
 def _safe_filename(name: str | None, fallback: str = "template.xlsx") -> str:
@@ -76,9 +180,537 @@ def _read_meta():
     return {"filename": None, "updated_at": None}
 
 
+class _AltaSvhParser(HTMLParser):
+    """Extract result cards from Alta's public SVH/TS search page."""
+
+    def __init__(self):
+        super().__init__()
+        self.cards: list[dict] = []
+        self._in_results_col = False
+        self._results_col_depth = 0
+        self._in_card = False
+        self._card_depth = 0
+        self._card: dict | None = None
+        self._collecting = False
+        self._collect_target: str | None = None
+        self._collect_buf: list[str] = []
+        self._in_phone = False
+        self._in_email = False
+        self._address_col_seen = False
+        self._right_col_seen = False
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = attributes.get("class", "").split()
+
+        # Detect results column: col-75
+        if not self._in_results_col and "col-75" in classes:
+            self._in_results_col = True
+            self._results_col_depth = 1
+            return
+        if self._in_results_col:
+            self._results_col_depth += 1
+
+        # Only parse cards inside results column
+        if not self._in_results_col:
+            return
+
+        # Detect card container: boxSubstrate boxSubstrate-offset-0 p-10 mb10
+        if not self._in_card and "boxSubstrate" in classes and "boxSubstrate-offset-0" in classes and "p-10" in classes:
+            self._in_card = True
+            self._card = {
+                "type": "", "name": "", "url": "", "address": "",
+                "license": "", "customs": "", "transport": "",
+                "phone": "", "email": "", "inn": "", "owner_address": "",
+            }
+            self._card_depth = 1
+            self._address_col_seen = False
+            self._right_col_seen = False
+            return
+
+        if not self._in_card:
+            return
+
+        self._card_depth += 1
+
+        # Link to detail page
+        if tag == "a" and "/svh/" in attributes.get("href", "") and not self._card["url"]:
+            href = attributes["href"]
+            if href.startswith("/"):
+                href = "https://www.alta.ru" + href
+            self._card["url"] = href
+
+        # h3 contains the name
+        if tag == "h3" and not self._card["name"]:
+            self._collect_target = "name"
+            self._collect_buf = []
+            self._collecting = True
+
+        # Type is the text before h3 (first text in card)
+        if not self._card["type"]:
+            self._collect_target = "type"
+            self._collect_buf = []
+            self._collecting = True
+
+        # Address: pSvh_fieldColumn-list pSvh_fieldColumn-left lightgray
+        if "pSvh_fieldColumn-list" in classes and "pSvh_fieldColumn-left" in classes and "lightgray" in classes:
+            self._collect_target = "address"
+            self._collect_buf = []
+            self._collecting = True
+            self._address_col_seen = True
+
+        # License: div inside pSvh_fieldColumn-right
+        if "pSvh_fieldColumn-right" in classes and tag == "div":
+            if not self._address_col_seen:
+                # First right column = license (before customs row)
+                self._collect_target = "license"
+                self._collect_buf = []
+                self._collecting = True
+            else:
+                self._right_col_seen = True
+                # Second right column = transport
+                self._collect_target = "transport"
+                self._collect_buf = []
+                self._collecting = True
+
+        # Customs: pSvh_fieldColumn-left (second occurrence after address)
+        if "pSvh_fieldColumn-list" in classes and "pSvh_fieldColumn-left" in classes and not "lightgray" in classes:
+            if self._address_col_seen:
+                self._collect_target = "customs"
+                self._collect_buf = []
+                self._collecting = True
+
+        # Phone link
+        if tag == "a" and attributes.get("href", "").startswith("tel:"):
+            self._in_phone = True
+            self._collect_buf = []
+        # Email link
+        if tag == "a" and attributes.get("href", "").startswith("mailto:"):
+            self._in_email = True
+            self._collect_buf = []
+
+    def handle_endtag(self, tag):
+        # Close results column
+        if not self._in_results_col:
+            return
+        self._results_col_depth -= 1
+        if self._results_col_depth <= 0:
+            self._in_results_col = False
+
+        # Close card
+        if not self._in_card:
+            return
+
+        # Close phone / email
+        if self._in_phone and tag == "a":
+            val = "".join(self._collect_buf).strip()
+            if val:
+                self._card["phone"] = val
+            self._in_phone = False
+            self._collect_buf = []
+        if self._in_email and tag == "a":
+            val = "".join(self._collect_buf).strip()
+            if val:
+                self._card["email"] = val
+            self._in_email = False
+            self._collect_buf = []
+
+        # Close collection
+        if self._collecting and tag in ("br", "div", "a", "span", "p", "h3", "strong", "em"):
+            if self._collect_target and self._card:
+                val = " ".join("".join(self._collect_buf).split())
+                if val and not self._card.get(self._collect_target):
+                    self._card[self._collect_target] = val
+            self._collecting = False
+            self._collect_target = None
+            self._collect_buf = []
+
+        self._card_depth -= 1
+        if self._card_depth <= 0:
+            if self._card and self._card.get("name"):
+                self.cards.append(self._card)
+            self._in_card = False
+            self._card = None
+
+    def handle_data(self, data):
+        if not self._in_results_col:
+            return
+
+        if self._in_phone or self._in_email:
+            self._collect_buf.append(data)
+            return
+
+        if self._collecting and self._collect_target:
+            self._collect_buf.append(data)
+
+
+# ── Detail-page parser ────────────────────────────────────────────────────
+
+class _AltaSvhDetailParser(HTMLParser):
+    """Extract detailed card from a single SVH/TS page (e.g. /svh/svh-10001070223200072/)."""
+
+    def __init__(self):
+        super().__init__()
+        self.title = ""
+        self.in_title = False
+        self.title_depth = 0
+        self.current_label = None
+        self.current_data: list[str] = []
+        self.result: dict = {
+            "name": "",
+            "address": "",
+            "owner_address": "",
+            "phone": "",
+            "email": "",
+            "inn": "",
+            "license": "",
+            "type": "",
+            "customs": "",
+            "transport": "",
+        }
+        self.label_pattern = re.compile(r"^(Склад временного хранения расположен по адресу:|Адрес владельца:|Телефон:|E-mail:|ИНН:|№ лицензии:|Тип склада:|Таможня:)\s*$", re.UNICODE)
+        self._current_key = None
+
+    def handle_starttag(self, tag, attrs):
+        attributes = dict(attrs)
+        classes = attributes.get("class", "").split()
+
+        if tag == "h1" and not self.in_title:
+            self.in_title = True
+            self.title_depth = 1
+
+        # Phone link
+        if tag == "a" and attributes.get("href", "").startswith("tel:"):
+            self._current_key = "phone"
+            self.current_data = []
+        # Email link
+        if tag == "a" and attributes.get("href", "").startswith("mailto:"):
+            self._current_key = "email"
+            self.current_data = []
+
+    def handle_endtag(self, tag):
+        if self.in_title and tag == "h1":
+            self.in_title = False
+            self.title = " ".join(self.current_data).strip()
+            self.current_data = []
+
+        if self._current_key and tag == "a":
+            val = "".join(self.current_data).strip()
+            if val:
+                self.result[self._current_key] = val
+            self._current_key = None
+            self.current_data = []
+
+    def handle_data(self, data):
+        if self.in_title:
+            self.current_data.append(data)
+
+        if self._current_key:
+            self.current_data.append(data)
+
+        # Detect label text (bold / strong before colon)
+        stripped = data.strip()
+        if not stripped:
+            return
+        # Check if this data matches a known label pattern
+        for label, key in [
+            ("Склад временного хранения расположен по адресу:", "address"),
+            ("Адрес владельца:", "owner_address"),
+            ("Телефон:", "phone"),
+            ("E-mail:", "email"),
+            ("ИНН:", "inn"),
+            ("№ лицензии:", "license"),
+            ("Тип склада:", "type"),
+            ("Таможня:", "customs"),
+        ]:
+            if stripped.startswith(label):
+                self._current_key = key
+                self.current_data = [stripped[len(label):].strip()]
+                return
+
+
+def _fetch_svh(query: dict[str, str]) -> list[dict]:
+    query_string = urlencode({key: value for key, value in query.items() if value})
+    # Check in-memory cache first
+    mem = _svh_mem_cache.get(query_string)
+    if mem and time.monotonic() - mem[0] < 30:
+        return mem[1]
+    # Check SQLite cache
+    cached = _cache_get_search(query_string)
+    if cached is not None:
+        _svh_mem_cache[query_string] = (time.monotonic(), cached)
+        return cached
+    request = Request(
+        f"{ALTA_SVH_SEARCH_URL}?{query_string}",
+        headers={"User-Agent": "TamozhenFormat/1.0 (SVH registry search)"},
+    )
+    with urlopen(request, timeout=15) as response:
+        html = response.read().decode("utf-8", errors="replace")
+
+    results = _parse_svh_cards_regex(html)
+
+    # Debug
+    import re as _re
+    box_count = len(_re.findall(r'boxSubstrate boxSubstrate-offset-0', html))
+    print(f"[SVH] DEBUG: query={query_string[:60]}, cards={len(results)}, boxSubstrate-offset-0={box_count}")
+
+    _cache_set_search(query_string, results)
+    _svh_mem_cache[query_string] = (time.monotonic(), results)
+    return results
+
+
+def _parse_svh_cards_regex(html: str) -> list[dict]:
+    """Parse SVH cards from Alta.ru search results using div-counting."""
+    cards = []
+
+    # Find the results column (col-75) to limit search scope
+    col75_start = html.find('class="col-75')
+    if col75_start == -1:
+        search_html = html
+    else:
+        # Find the next major section after results
+        next_footer = html.find('<footer', col75_start)
+        next_main = html.find('</main>', col75_start)
+        end_pos = min(
+            [p for p in [next_footer, next_main] if p != -1]
+            or [len(html)]
+        )
+        search_html = html[col75_start:end_pos]
+
+    # Find all card opening tags
+    card_open_pattern = re.compile(r'class="boxSubstrate boxSubstrate-offset-0 p-10 mb10">')
+    for card_open in card_open_pattern.finditer(search_html):
+        start = card_open.end()
+
+        # Count divs to find the matching closing tag
+        depth = 1
+        pos = start
+        card_close = -1
+        while depth > 0 and pos < len(search_html):
+            next_open = search_html.find('<div', pos)
+            next_close = search_html.find('</div>', pos)
+            if next_close == -1:
+                break
+            if next_open != -1 and next_open < next_close:
+                # Check it's not a closing tag
+                tag_text = search_html[next_open:next_open+6]
+                if not tag_text.startswith('</d'):
+                    depth += 1
+                    pos = next_open + 4
+                else:
+                    depth -= 1
+                    if depth == 0:
+                        card_close = next_close
+                        break
+            else:
+                depth -= 1
+                if depth == 0:
+                    card_close = next_close
+                    break
+                pos = next_close + 6
+
+        if card_close == -1:
+            continue
+
+        card_html = search_html[start:card_close].strip()
+        if not card_html:
+            continue
+
+        card = {
+            "type": "", "name": "", "url": "", "address": "",
+            "license": "", "customs": "", "transport": "",
+            "phone": "", "email": "", "inn": "", "owner_address": "",
+        }
+
+        # Type: first text before <br>
+        type_match = re.search(r'^(.*?)(?:<br|<div)', card_html, re.DOTALL)
+        if type_match:
+            card["type"] = re.sub(r'<[^>]+>', '', type_match.group(1)).strip()
+            card["type"] = re.sub(r'\s+', ' ', card["type"])
+
+        # Name + URL: inside <div class="h3"><a href="...">Name</a></div>
+        name_match = re.search(
+            r'class="h3">.*?<a[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+            card_html, re.DOTALL
+        )
+        if name_match:
+            card["url"] = "https://www.alta.ru" + name_match.group(1)
+            card["name"] = re.sub(r'<[^>]+>', '', name_match.group(2)).strip()
+
+        # Address: pSvh_fieldColumn-left lightgray
+        addr_match = re.search(
+            r'pSvh_fieldColumn-left lightgray">(.*?)</div>',
+            card_html, re.DOTALL
+        )
+        if addr_match:
+            card["address"] = re.sub(r'<[^>]+>', '', addr_match.group(1)).strip()
+
+        # License: first pSvh_fieldColumn-right div content
+        lic_match = re.search(
+            r'pSvh_fieldColumn-right">(.*?)</div>',
+            card_html, re.DOTALL
+        )
+        if lic_match:
+            card["license"] = re.sub(r'<[^>]+>', '', lic_match.group(1)).strip()
+
+        # Customs: second pSvh_fieldColumn-left div (without lightgray)
+        all_left = re.findall(r'pSvh_fieldColumn-left[^>]*">(.*?)</div>', card_html, re.DOTALL)
+        if len(all_left) >= 2:
+            card["customs"] = re.sub(r'<[^>]+>', '', all_left[1]).strip()
+
+        # Transport: second pSvh_fieldColumn-right div
+        all_right = re.findall(r'pSvh_fieldColumn-right">(.*?)</div>', card_html, re.DOTALL)
+        if len(all_right) >= 2:
+            card["transport"] = re.sub(r'<[^>]+>', '', all_right[1]).strip()
+
+        if card["name"]:
+            cards.append(card)
+
+    return cards
+
+
+def _fetch_svh_detail(license_url: str) -> dict | None:
+    # Extract license key from URL like https://www.alta.ru/svh/svh-10001070223200072/
+    m = re.search(r"/svh/([\w\-]+)", license_url)
+    if not m:
+        return None
+    license_key = m.group(1)
+    # Check cache
+    cached = _cache_get_detail(license_key)
+    if cached is not None:
+        return cached
+    url = license_url if license_url.startswith("http") else ALTA_SVH_DETAIL_URL + license_key + "/"
+    request = Request(
+        url,
+        headers={"User-Agent": "TamozhenFormat/1.0 (SVH detail)"},
+    )
+    with urlopen(request, timeout=15) as response:
+        html = response.read().decode("utf-8", errors="replace")
+    parser = _AltaSvhDetailParser()
+    parser.feed(html)
+    result = parser.result
+    if result.get("name"):
+        result["url"] = url
+        _cache_set_detail(license_key, result)
+    return result if result.get("name") else None
+
+
+def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
+    """Fetch all pages of the SVH registry and return merged list of cards."""
+    all_cards: list[dict] = []
+    seen_urls: set[str] = set()
+    for page in range(1, max_pages + 1):
+        cache_key = f"_page_{page}"
+        cached_page = _cache_get_search(cache_key)
+        if cached_page:
+            all_cards.extend(cached_page)
+            continue
+        url = f"{ALTA_SVH_SEARCH_URL}" if page == 1 else f"{ALTA_SVH_SEARCH_URL}page_{page}/"
+        request = Request(
+            url,
+            headers={"User-Agent": "TamozhenFormat/1.0 (SVH full registry)"},
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                html = response.read().decode("utf-8", errors="replace")
+            parser = _AltaSvhParser()
+            parser.feed(html)
+            page_cards = parser.cards
+            _cache_set_search(cache_key, page_cards)
+            for card in page_cards:
+                if card.get("url") and card["url"] not in seen_urls:
+                    seen_urls.add(card["url"])
+                    all_cards.append(card)
+        except Exception:
+            break  # Stop at first error (no more pages)
+    return all_cards
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/svh/search")
+async def search_svh(
+    s_adres: str = "",
+    s_name: str = "",
+    s_tam: str = "",
+    s_tam_name: str = "",
+    s_nlic: str = "",
+    s_vidtrans: str = "",
+):
+    query = {
+        "s_adres": s_adres.strip(),
+        "s_name": s_name.strip(),
+        "s_tam": s_tam.strip(),
+        "s_tam_name": s_tam_name.strip(),
+        "s_nlic": s_nlic.strip(),
+        "s_vidtrans": s_vidtrans.strip(),
+    }
+    if not any(query.values()):
+        return JSONResponse({"error": "Укажите хотя бы один параметр поиска"}, status_code=422)
+    try:
+        results = await run_in_threadpool(_fetch_svh, query)
+        return {
+            "source": "Alta.ru",
+            "source_url": ALTA_SVH_SEARCH_URL,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "count": len(results),
+            "results": results,
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": f"Не удалось обновить реестр Alta.ru: {e}"}, status_code=502)
+
+
+@app.get("/api/svh/detail/{license_key}")
+async def detail_svh(license_key: str):
+    """Get detailed information about a specific SVH/TS by license key."""
+    try:
+        result = await run_in_threadpool(_fetch_svh_detail, license_key)
+        if result:
+            return {"source": "Alta.ru", "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "result": result}
+        return JSONResponse({"error": f"СВХ с ключом '{license_key}' не найден"}, status_code=404)
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": f"Ошибка получения данных: {e}"}, status_code=502)
+
+
+@app.get("/api/svh/all")
+async def all_svh(page: int = Query(1, ge=1), per_page: int = Query(100, ge=1, le=500)):
+    """Get the full SVH registry with pagination. Fetches from Alta.ru if cache is empty."""
+    try:
+        all_cards = await run_in_threadpool(_fetch_all_pages)
+        total = len(all_cards)
+        start = (page - 1) * per_page
+        end = start + per_page
+        return {
+            "source": "Alta.ru",
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page if total else 0,
+            "results": all_cards[start:end],
+        }
+    except Exception as e:
+        traceback.print_exc()
+        return JSONResponse({"error": f"Ошибка получения реестра: {e}"}, status_code=502)
+
+
+@app.get("/api/svh/cache/stats")
+async def svh_cache_stats():
+    """Get cache statistics."""
+    return _cache_stats()
+
+
+@app.delete("/api/svh/cache")
+async def clear_svh_cache():
+    """Clear all SVH cache data."""
+    _cache_clear()
+    _svh_mem_cache.clear()
+    return {"ok": True, "message": "Кэш очищен"}
 
 
 @app.get("/api/template")

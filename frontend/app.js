@@ -379,6 +379,275 @@
     });
   }
 
+  // ---- Табы ----
+  (function () {
+    const tabs = document.querySelectorAll('.tab');
+    const contents = document.querySelectorAll('.tab-content');
+    tabs.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        var target = tab.dataset.tab;
+        tabs.forEach(function (t) { t.classList.remove('active'); });
+        contents.forEach(function (c) { c.classList.remove('active'); });
+        tab.classList.add('active');
+        var targetEl = document.getElementById('tab-' + target);
+        if (targetEl) targetEl.classList.add('active');
+      });
+    });
+  })();
+
+  // ---- SVH Search ----
+  var svhEl = {
+    address: document.getElementById('svhAddress'),
+    name: document.getElementById('svhName'),
+    customs: document.getElementById('svhCustoms'),
+    license: document.getElementById('svhLicense'),
+    transport: document.getElementById('svhTransport'),
+    searchBtn: document.getElementById('svhSearchBtn'),
+    clearBtn: document.getElementById('svhClearBtn'),
+    errorBox: document.getElementById('svhErrorBox'),
+    resultsCard: document.getElementById('svhResultsCard'),
+    resultsCount: document.getElementById('svhResultsCount'),
+    resultsSource: document.getElementById('svhResultsSource'),
+    loading: document.getElementById('svhLoading'),
+    resultsList: document.getElementById('svhResultsList'),
+    pagination: document.getElementById('svhPagination'),
+  };
+
+  var svhState = {
+    allResults: [],
+    currentPage: 1,
+    perPage: 20,
+    total: 0,
+  };
+
+  function showSvhError(msg) {
+    svhEl.errorBox.textContent = msg;
+    svhEl.errorBox.style.display = 'block';
+  }
+  function clearSvhError() {
+    svhEl.errorBox.style.display = 'none';
+    svhEl.errorBox.textContent = '';
+  }
+
+  function fmtDateShort(iso) {
+    if (!iso) return '';
+    try {
+      var d = new Date(iso);
+      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+    } catch (e) { return iso; }
+  }
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    var div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+  }
+
+  function renderSvhCard(card) {
+    var div = document.createElement('div');
+    div.className = 'svh-card';
+
+    var typeHtml = '';
+    if (card.type) {
+      typeHtml = '<span class="svh-card-type">' + escapeHtml(card.type) + '</span>';
+    }
+
+    var fieldsHtml = '';
+    var fields = [
+      ['Адрес', card.address],
+      ['Лицензия', card.license],
+      ['Таможня', card.customs],
+      ['Транспорт', card.transport],
+      ['Телефон', card.phone],
+      ['Email', card.email],
+      ['ИНН', card.inn],
+    ];
+    fields.forEach(function (f) {
+      if (f[1]) {
+        var val = f[1];
+        if (f[0] === 'Email') {
+          val = '<a href="mailto:' + escapeHtml(f[1]) + '">' + escapeHtml(f[1]) + '</a>';
+        } else if (f[0] === 'Телефон') {
+          val = '<a href="tel:' + escapeHtml(f[1]) + '">' + escapeHtml(f[1]) + '</a>';
+        } else {
+          val = escapeHtml(f[1]);
+        }
+        fieldsHtml += '<div class="svh-card-field"><span class="svh-card-label">' + escapeHtml(f[0]) + ':</span><span class="svh-card-value">' + val + '</span></div>';
+      }
+    });
+
+    var urlHtml = '';
+    if (card.url) {
+      urlHtml = '<a href="' + escapeHtml(card.url) + '" target="_blank" rel="noopener">Страница на alta.ru →</a>';
+    }
+
+    div.innerHTML =
+      '<div class="svh-card-header">' +
+        '<div class="svh-card-title">' + escapeHtml(card.name) + '</div>' +
+        typeHtml +
+      '</div>' +
+      '<div class="svh-card-grid">' + fieldsHtml + '</div>' +
+      (urlHtml ? '<div class="svh-card-actions">' + urlHtml + '</div>' : '');
+
+    return div;
+  }
+
+  function renderSvhResults() {
+    svhEl.resultsList.innerHTML = '';
+    var start = (svhState.currentPage - 1) * svhState.perPage;
+    var end = start + svhState.perPage;
+    var pageItems = svhState.allResults.slice(start, end);
+
+    pageItems.forEach(function (card) {
+      svhEl.resultsList.appendChild(renderSvhCard(card));
+    });
+
+    svhEl.resultsCount.textContent = 'Найдено: ' + svhState.allResults.length;
+    svhEl.resultsSource.textContent = '';
+    svhEl.loading.style.display = 'none';
+  }
+
+  function renderPagination() {
+    svhEl.pagination.innerHTML = '';
+    if (svhState.totalPages <= 1) return;
+
+    var total = svhState.totalPages;
+    var current = svhState.currentPage;
+
+    // Previous
+    var prevBtn = document.createElement('button');
+    prevBtn.className = 'svh-page-btn';
+    prevBtn.textContent = '← Назад';
+    prevBtn.disabled = current <= 1;
+    prevBtn.addEventListener('click', function () {
+      svhState.currentPage = current - 1;
+      renderSvhResults();
+      renderPagination();
+      svhEl.resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    svhEl.pagination.appendChild(prevBtn);
+
+    // Page numbers
+    var range = 3;
+    var from = Math.max(1, current - range);
+    var to = Math.min(total, current + range);
+    for (var i = from; i <= to; i++) {
+      var btn = document.createElement('button');
+      btn.className = 'svh-page-btn' + (i === current ? ' active' : '');
+      btn.textContent = i;
+      (function (p) {
+        btn.addEventListener('click', function () {
+          svhState.currentPage = p;
+          renderSvhResults();
+          renderPagination();
+          svhEl.resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        });
+      })(i);
+      svhEl.pagination.appendChild(btn);
+    }
+
+    // Next
+    var nextBtn = document.createElement('button');
+    nextBtn.className = 'svh-page-btn';
+    nextBtn.textContent = 'Вперёд →';
+    nextBtn.disabled = current >= total;
+    nextBtn.addEventListener('click', function () {
+      svhState.currentPage = current + 1;
+      renderSvhResults();
+      renderPagination();
+      svhEl.resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    svhEl.pagination.appendChild(nextBtn);
+
+    svhEl.pagination.style.display = 'flex';
+  }
+
+  function doSvhSearch() {
+    clearSvhError();
+    svhEl.resultsCard.hidden = true;
+    svhEl.resultsList.innerHTML = '';
+    svhEl.pagination.innerHTML = '';
+    svhEl.pagination.style.display = 'none';
+
+    var address = (svhEl.address ? svhEl.address.value : '').trim();
+    var name = (svhEl.name ? svhEl.name.value : '').trim();
+    var customs = (svhEl.customs ? svhEl.customs.value : '').trim();
+    var license = (svhEl.license ? svhEl.license.value : '').trim();
+    var transport = (svhEl.transport ? svhEl.transport.value : '');
+
+    console.log('[SVH] Search params:', { address: address, name: name, customs: customs, license: license, transport: transport });
+    console.log('[SVH] DOM elements:', {
+      addressEl: !!svhEl.address,
+      nameEl: !!svhEl.name,
+      customsEl: !!svhEl.customs,
+      licenseEl: !!svhEl.license,
+      transportEl: !!svhEl.transport,
+    });
+
+    var params = new URLSearchParams();
+    if (address) params.set('s_adres', address);
+    if (name) params.set('s_name', name);
+    if (customs) params.set('s_tam', customs);
+    if (license) params.set('s_nlic', license);
+    if (transport) params.set('s_vidtrans', transport);
+
+    var url = API + '/api/svh/search?' + params.toString();
+    console.log('[SVH] Request URL:', url);
+
+    svhEl.loading.style.display = 'flex';
+
+    fetch(url)
+      .then(function (res) {
+        console.log('[SVH] Response status:', res.status);
+        return res.json();
+      })
+      .then(function (data) {
+        console.log('[SVH] Response data:', data);
+        if (data.error) {
+          showSvhError(data.error);
+          svhEl.loading.style.display = 'none';
+          return;
+        }
+        svhState.allResults = data.results || [];
+        svhState.total = data.count || svhState.allResults.length;
+        svhState.totalPages = Math.max(1, Math.ceil(svhState.total / svhState.perPage));
+        svhState.currentPage = 1;
+        svhEl.resultsCard.hidden = false;
+        renderSvhResults();
+        renderPagination();
+      })
+      .catch(function (e) {
+        console.error('[SVH] Fetch error:', e);
+        showSvhError('Ошибка при поиске: ' + e.message);
+        svhEl.loading.style.display = 'none';
+      });
+  }
+
+  svhEl.searchBtn.addEventListener('click', function () {
+    doSvhSearch();
+  });
+
+  // Enter key triggers search
+  [svhEl.address, svhEl.name, svhEl.customs, svhEl.license].forEach(function (input) {
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { e.preventDefault(); doSvhSearch(); }
+    });
+  });
+
+  svhEl.clearBtn.addEventListener('click', function () {
+    svhEl.address.value = '';
+    svhEl.name.value = '';
+    svhEl.customs.value = '';
+    svhEl.license.value = '';
+    svhEl.transport.value = '';
+    clearSvhError();
+    svhEl.resultsCard.hidden = true;
+    svhEl.resultsList.innerHTML = '';
+    svhEl.pagination.innerHTML = '';
+    svhState.allResults = [];
+  });
+
   // ---- Инициализация ----
   loadTemplateInfo();
 })();

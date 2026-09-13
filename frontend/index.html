@@ -20,8 +20,16 @@
     </div>
   </header>
 
-  <main>
+      <main>
     <div class="wrap">
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab active" data-tab="process" type="button">Обработка файлов</button>
+        <button class="tab" data-tab="svh" type="button">Поиск СВХ</button>
+      </div>
+
+      <!-- Tab: Process -->
+      <div class="tab-content active" id="tab-process">
       <section class="hero">
         <h1>Загрузите входные файлы — получите готовый шаблон</h1>
         <p>
@@ -142,6 +150,91 @@
           </div>
         </article>
       </section>
+      </div>
+      <!-- /tab-process -->
+
+      <!-- Tab: SVH Search -->
+      <div class="tab-content" id="tab-svh">
+      <section class="hero">
+        <h1>Поиск складов временного хранения (СВХ)</h1>
+        <p>
+          Реестр СВХ и ТС с сайта alta.ru. Ищите по адресу, названию, таможне, номеру лицензии или виду транспорта.
+        </p>
+      </section>
+
+      <section class="steps">
+        <!-- Поиск -->
+        <article class="card">
+          <div class="card-head">
+            <div class="step-num">1</div>
+            <h2>Параметры поиска</h2>
+          </div>
+          <p class="card-desc">
+            Укажите хотя бы один параметр. Поля можно комбинировать для точного поиска.
+          </p>
+
+          <div class="svh-search-grid">
+            <div class="field">
+              <label for="svhAddress">Адрес</label>
+              <input id="svhAddress" type="text" placeholder="напр. Внуково" />
+            </div>
+            <div class="field">
+              <label for="svhName">Название</label>
+              <input id="svhName" type="text" placeholder="напр. ГБС" />
+            </div>
+            <div class="field">
+              <label for="svhCustoms">Таможня</label>
+              <input id="svhCustoms" type="text" placeholder="напр. 10001000" />
+            </div>
+            <div class="field">
+              <label for="svhLicense">№ лицензии</label>
+              <input id="svhLicense" type="text" placeholder="напр. 10001/070223" />
+            </div>
+            <div class="field">
+              <label for="svhTransport">Вид транспорта</label>
+              <select id="svhTransport">
+                <option value="">Любой</option>
+                <option value="Автодорожный">Автодорожный</option>
+                <option value="Железнодорожный">Железнодорожный</option>
+                <option value="Воздушный">Воздушный</option>
+                <option value="Морской">Морской</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="actions-row" style="margin-top:12px;">
+            <button id="svhSearchBtn" type="button" class="btn btn-primary">Найти</button>
+            <button id="svhClearBtn" type="button" class="btn btn-ghost">Очистить</button>
+          </div>
+
+          <div id="svhErrorBox" class="error-box" style="display:none;"></div>
+        </article>
+
+        <!-- Результаты -->
+        <article class="card" id="svhResultsCard" hidden>
+          <div class="card-head">
+            <div class="step-num">2</div>
+            <h2>Результаты поиска</h2>
+          </div>
+
+          <div class="svh-results-header">
+            <span id="svhResultsCount">Найдено: 0</span>
+            <span id="svhResultsSource" class="svh-source"></span>
+          </div>
+
+          <div id="svhLoading" class="svh-loading" style="display:none;">
+            <div class="svh-spinner"></div>
+            <span>Загрузка из реестра…</span>
+          </div>
+
+          <div id="svhResultsList" class="svh-results-list"></div>
+
+          <!-- Pagination -->
+          <div id="svhPagination" class="svh-pagination" style="display:none;"></div>
+        </article>
+      </section>
+      </div>
+      <!-- /tab-svh -->
     </div>
   </main>
 
