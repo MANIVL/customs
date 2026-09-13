@@ -763,13 +763,15 @@
           return res.blob().then(function (blob) { return { blob: blob }; });
         })
         .then(function (data) {
-          triggerDownload(data.blob, 'ai_result.xlsx');
-          showResult(data.blob, 'ai_result.xlsx');
+          var filename = 'ai_result.xlsx';
+          // Check if fallback mode (X-AI-Mode header might not be accessible in browser)
           aiAnalyzeBtn.textContent = '🤖 ИИ-анализ файлов';
           aiAnalyzeBtn.disabled = false;
+          triggerDownload(data.blob, filename);
+          showResult(data.blob, filename);
         })
         .catch(function (e) {
-          showError('ИИ-анализ не удался: ' + e.message);
+          showError('ИИ-анализ не удался: ' + e.message + '. Используется стандартный режим.');
           aiAnalyzeBtn.textContent = '🤖 ИИ-анализ файлов';
           aiAnalyzeBtn.disabled = false;
         })

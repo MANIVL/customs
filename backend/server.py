@@ -55,7 +55,7 @@ SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
 # ── Yandex GPT (YandexCloud) ──────────────────────────────────────────────
 YANDEX_GPT_API_URL = "https://llm.api.cloud.yandex.net/llm/v1/completion"
 _YANDEX_API_KEY = os.environ.get("YANDEX_GPT_API_KEY")
-_YANDEX_MODEL_URN = os.environ.get("YANDEX_MODEL_URN", "gpt://b1g9m7q1q3s2t4u5v6w/yandexgpt-lite")
+_YANDEX_MODEL_URN = os.environ.get("YANDEX_MODEL_URN", "")
 
 # System prompt: AI Excel analyzer
 _AI_SYSTEM_PROMPT = """Ты — эксперт по анализу Excel-файлов для таможенного декларирования.
@@ -858,84 +858,99 @@ async def ai_analyze(
     country: str = Form("CN"),
     unit: str = Form("шт"),
 ):
-    """AI analyzes Excel files, finds columns by meaning, fills template."""
+    """AI analyzes Excel files, finds columns by meaning, fills template.
+    Falls back to keyword-based engine if AI is unavailable."""
     try:
         template_bytes = await _resolve_template(template)
         input_bytes = await _read_all(inputs)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     
-    # Extract preview from each file
-    file_previews: list[str] = []
-    for i, content in enumerate(input_bytes):
-        preview = _extract_excel_preview(content, max_rows=30)
-        file_previews.append(f"--- Файл {i+1} ---\n{preview}")
+    # Check if AI is configured
+    ai_enabled = bool(_YANDEX_API_KEY and _YANDEX_MODEL_URN)
     
-    user_content = "Файлы для анализа:\n\n" + "\n\n".join(file_previews)
+    if ai_enabled:
+        # Extract preview from each file
+        file_previews: list[str] = []
+        for i, content in enumerate(input_bytes):
+            preview = _extract_excel_preview(content, max_rows=30)
+            file_previews.append(f"--- Файл {i+1} ---\n{preview}")
+        
+        user_content = "Файлы для анализа:\n\n" + "\n\n".join(file_previews)
+        
+        messages = [
+            {"role": "system", "content": _AI_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ]
+        
+        try:
+            ai_reply = await run_in_threadpool(_call_yandex_gpt, messages)
+            
+            # Parse AI response
+            try:
+                ai_text = ai_reply.strip()
+                if "```json" in ai_text:
+                    ai_text = ai_text.split("```json")[1].split("```")[0]
+                elif "```" in ai_text:
+                    ai_text = ai_text.split("```")[1].split("```")[0]
+                
+                ai_data = json.loads(ai_text)
+                mapping = ai_data.get("mapping", {})
+                items_list = ai_data.get("items", [])
+                certificates = ai_data.get("certificates", [])
+                
+                # Build items dict for engine
+                items_dict: dict[int, dict] = {}
+                for item in items_list:
+                    row_no = item.get("row")
+                    if row_no:
+                        items_dict[row_no] = {k: v for k, v in item.items() if k not in ("row", "no")}
+                        if "no" in item:
+                            items_dict[row_no]["no"] = item["no"]
+                
+                # Add certificates if found
+                for cert in certificates:
+                    if cert.get("mnr"):
+                        for no, rec in items_dict.items():
+                            if not rec.get("mnr"):
+                                rec["mnr"] = cert["mnr"]
+                                if cert.get("date_from"):
+                                    rec["date_from"] = cert["date_from"]
+                                if cert.get("date_to"):
+                                    rec["date_to"] = cert["date_to"]
+                                if cert.get("mnr_code"):
+                                    rec["mnr_code"] = cert["mnr_code"]
+                                break
+                
+                # Fill template using AI mapping
+                settings = {"country": country, "unit": unit}
+                result_bytes = engine.fill_template_with_ai(template_bytes, items_dict, mapping, settings)
+                
+                return StreamingResponse(
+                    io.BytesIO(result_bytes),
+                    media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": 'attachment; filename="ai_result.xlsx"'},
+                )
+            except json.JSONDecodeError as e:
+                print(f"[AI] JSON parse error: {e}, falling back to keyword engine")
+            except Exception as e:
+                print(f"[AI] AI processing error: {e}, falling back to keyword engine")
+        except Exception as e:
+            print(f"[AI] API call error: {e}, falling back to keyword engine")
     
-    messages = [
-        {"role": "system", "content": _AI_SYSTEM_PROMPT},
-        {"role": "user", "content": user_content},
-    ]
+    # Fallback: use existing keyword-based engine
+    print("[AI] Using keyword-based engine (fallback)")
+    settings = {"country": country, "unit": unit}
+    result_bytes, report = await run_in_threadpool(engine.process, template_bytes, input_bytes, settings)
     
-    try:
-        ai_reply = await run_in_threadpool(_call_yandex_gpt, messages)
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse({"error": f"Ошибка Yandex GPT: {e}"}, status_code=502)
-    
-    # Parse AI response
-    try:
-        # Extract JSON from markdown code blocks if present
-        ai_text = ai_reply.strip()
-        if "```json" in ai_text:
-            ai_text = ai_text.split("```json")[1].split("```")[0]
-        elif "```" in ai_text:
-            ai_text = ai_text.split("```")[1].split("```")[0]
-        
-        ai_data = json.loads(ai_text)
-        mapping = ai_data.get("mapping", {})
-        items_list = ai_data.get("items", [])
-        certificates = ai_data.get("certificates", [])
-        
-        # Build items dict for engine
-        items_dict: dict[int, dict] = {}
-        for item in items_list:
-            row_no = item.get("row")
-            if row_no:
-                items_dict[row_no] = {k: v for k, v in item.items() if k not in ("row", "no")}
-                if "no" in item:
-                    items_dict[row_no]["no"] = item["no"]
-        
-        # Add certificates if found
-        for cert in certificates:
-            if cert.get("mnr"):
-                # Find first item without certificate and add it
-                for no, rec in items_dict.items():
-                    if not rec.get("mnr"):
-                        rec["mnr"] = cert["mnr"]
-                        if cert.get("date_from"):
-                            rec["date_from"] = cert["date_from"]
-                        if cert.get("date_to"):
-                            rec["date_to"] = cert["date_to"]
-                        if cert.get("mnr_code"):
-                            rec["mnr_code"] = cert["mnr_code"]
-                        break
-        
-        # Fill template using AI mapping
-        settings = {"country": country, "unit": unit}
-        result_bytes = engine.fill_template_with_ai(template_bytes, items_dict, mapping, settings)
-        
-        return StreamingResponse(
-            io.BytesIO(result_bytes),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers={"Content-Disposition": 'attachment; filename="ai_result.xlsx"'},
-        )
-    except json.JSONDecodeError as e:
-        return JSONResponse({"error": f"Не удалось распознать ответ ИИ: {e}. Ответ: {ai_reply[:200]}"}, status_code=500)
-    except Exception as e:
-        traceback.print_exc()
-        return JSONResponse({"error": f"Ошибка обработки: {e}"}, status_code=500)
+    return StreamingResponse(
+        io.BytesIO(result_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": 'attachment; filename="result.xlsx"',
+            "X-AI-Mode": "fallback",
+        },
+    )
 
 
 @app.get("/api/template")

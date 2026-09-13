@@ -37,7 +37,15 @@ if exist "requirements.txt" (
 )
 
 echo Запуск ТаможенФормат (веб)...
-echo ИИ-ассистент: Yandex GPT подключён
+if defined YANDEX_GPT_API_KEY (
+  if defined YANDEX_MODEL_URN (
+    echo ИИ-анализ файлов: Yandex GPT подключён
+  ) else (
+    echo ИИ-анализ файлов: нужен YANDEX_MODEL_URN в run.bat
+  )
+) else (
+  echo ИИ-анализ файлов: не настроен (будет использоваться стандартный режим)
+)
 "%PY%" main.py
 
 if errorlevel 1 (
