@@ -576,14 +576,10 @@
     var license = (svhEl.license ? svhEl.license.value : '').trim();
     var transport = (svhEl.transport ? svhEl.transport.value : '');
 
-    console.log('[SVH] Search params:', { address: address, name: name, customs: customs, license: license, transport: transport });
-    console.log('[SVH] DOM elements:', {
-      addressEl: !!svhEl.address,
-      nameEl: !!svhEl.name,
-      customsEl: !!svhEl.customs,
-      licenseEl: !!svhEl.license,
-      transportEl: !!svhEl.transport,
-    });
+    if (!address && !name && !customs && !license && !transport) {
+      showSvhError('Укажите хотя бы один параметр поиска');
+      return;
+    }
 
     var params = new URLSearchParams();
     if (address) params.set('s_adres', address);
@@ -593,20 +589,35 @@
     if (transport) params.set('s_vidtrans', transport);
 
     var url = API + '/api/svh/search?' + params.toString();
-    console.log('[SVH] Request URL:', url);
-
     svhEl.loading.style.display = 'flex';
+    if (svhEl.searchBtn) svhEl.searchBtn.disabled = true;
 
-    fetch(url)
+    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    var timer = null;
+    if (controller) {
+      timer = setTimeout(function () { controller.abort(); }, 55000);
+    }
+
+    fetch(url, controller ? { signal: controller.signal } : undefined)
       .then(function (res) {
-        console.log('[SVH] Response status:', res.status);
-        return res.json();
+        return res.text().then(function (text) {
+          var data;
+          try {
+            data = text ? JSON.parse(text) : {};
+          } catch (parseErr) {
+            throw new Error(
+              res.status >= 500
+                ? 'Сервер не успел получить ответ от Alta.ru (таймаут). Повторите через полминуты.'
+                : 'Некорректный ответ сервера'
+            );
+          }
+          data._httpStatus = res.status;
+          return data;
+        });
       })
       .then(function (data) {
-        console.log('[SVH] Response data:', data);
         if (data.error) {
           showSvhError(data.error);
-          svhEl.loading.style.display = 'none';
           return;
         }
         svhState.allResults = data.results || [];
@@ -616,11 +627,23 @@
         svhEl.resultsCard.hidden = false;
         renderSvhResults();
         renderPagination();
+        if (data.warning) {
+          showSvhError(data.warning);
+        }
+        if (svhState.total === 0) {
+          showSvhError('По заданным параметрам ничего не найдено. Уточните запрос.');
+        }
       })
       .catch(function (e) {
-        console.error('[SVH] Fetch error:', e);
-        showSvhError('Ошибка при поиске: ' + e.message);
+        var msg = e && e.name === 'AbortError'
+          ? 'Поиск превысил время ожидания. Повторите через 15–30 секунд.'
+          : ('Ошибка при поиске: ' + (e && e.message ? e.message : e));
+        showSvhError(msg);
+      })
+      .finally(function () {
+        if (timer) clearTimeout(timer);
         svhEl.loading.style.display = 'none';
+        if (svhEl.searchBtn) svhEl.searchBtn.disabled = false;
       });
   }
 
@@ -630,6 +653,7 @@
 
   // Enter key triggers search
   [svhEl.address, svhEl.name, svhEl.customs, svhEl.license].forEach(function (input) {
+    if (!input) return;
     input.addEventListener('keydown', function (e) {
       if (e.key === 'Enter') { e.preventDefault(); doSvhSearch(); }
     });

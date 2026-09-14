@@ -211,10 +211,12 @@ def _db():
     finally:
         conn.close()
 
-SVH_SEARCH_CACHE_TTL = 600  # 10 minutes
-SVH_DETAIL_CACHE_TTL = 1800  # 30 minutes
-SVH_HTTP_TIMEOUT = 45
-SVH_HTTP_RETRIES = 3
+SVH_SEARCH_CACHE_TTL = 6 * 3600  # 6 hours — fewer live hits to Alta from Render
+SVH_DETAIL_CACHE_TTL = 12 * 3600
+SVH_HTTP_CONNECT_TIMEOUT = 8
+SVH_HTTP_READ_TIMEOUT = 18
+SVH_HTTP_RETRIES = 2
+SVH_HTTP_BUDGET = 28  # keep under Render request limits
 
 def _cache_get_search(query_key: str, *, allow_stale: bool = False) -> list[dict] | None:
     with _db() as db:
@@ -551,36 +553,57 @@ def _alta_headers(purpose: str) -> dict[str, str]:
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            f"Chrome/122.0.0.0 Safari/537.36 TamozhenFormat/1.0 ({purpose})"
+            "Chrome/122.0.0.0 Safari/537.36"
         ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        # Avoid brotli/odd encodings; identity is safest for urllib on Render.
+        "Accept-Encoding": "identity",
         "Connection": "close",
+        "Cache-Control": "no-cache",
+        "Referer": "https://www.alta.ru/svh/",
+        "X-Purpose": purpose,
     }
 
 
 def _http_get_text(url: str, purpose: str) -> str:
     """GET Alta.ru HTML with retries; raises the last error on total failure."""
     last_err: Exception | None = None
+    started = time.time()
     for attempt in range(1, SVH_HTTP_RETRIES + 1):
+        remaining = SVH_HTTP_BUDGET - (time.time() - started)
+        if remaining < 3:
+            break
+        read_timeout = min(SVH_HTTP_READ_TIMEOUT, max(3, remaining - 1))
         try:
             request = Request(url, headers=_alta_headers(purpose))
-            with urlopen(request, timeout=SVH_HTTP_TIMEOUT) as response:
-                return response.read().decode("utf-8", errors="replace")
+            with urlopen(
+                request,
+                timeout=(SVH_HTTP_CONNECT_TIMEOUT, read_timeout),
+            ) as response:
+                raw = response.read()
+                ctype = (response.headers.get("Content-Type") or "").lower()
+                charset = "utf-8"
+                if "charset=" in ctype:
+                    charset = ctype.split("charset=", 1)[1].split(";")[0].strip() or "utf-8"
+                try:
+                    return raw.decode(charset, errors="replace")
+                except LookupError:
+                    return raw.decode("utf-8", errors="replace")
         except Exception as e:
             last_err = e
             print(f"[SVH] {purpose} attempt {attempt}/{SVH_HTTP_RETRIES} failed: {e}")
-            if attempt < SVH_HTTP_RETRIES:
-                time.sleep(1.5 * attempt)
+            if attempt < SVH_HTTP_RETRIES and (time.time() - started) < SVH_HTTP_BUDGET - 3:
+                time.sleep(min(1.2 * attempt, 2.0))
     assert last_err is not None
     raise last_err
 
 
 def _fetch_svh(query: dict[str, str]) -> list[dict]:
-    query_string = urlencode({key: value for key, value in query.items() if value})
+    query_string = urlencode({key: value for key, value in query.items() if value}, encoding="utf-8")
     # Check in-memory cache first
     mem = _svh_mem_cache.get(query_string)
-    if mem and time.time() - mem[0] < 60:
+    if mem and time.time() - mem[0] < 120:
         return mem[1]
     # Check SQLite cache
     cached = _cache_get_search(query_string)
@@ -597,15 +620,42 @@ def _fetch_svh(query: dict[str, str]) -> list[dict]:
             return stale
         raise
 
+    # Detect soft-block / challenge pages from datacenter IPs
+    low = html.lower()
+    blocked = any(
+        m in low
+        for m in (
+            "access denied",
+            "just a moment",
+            "cf-browser-verification",
+            "ddos-guard",
+            "checking your browser",
+        )
+    )
     results = _parse_svh_cards_regex(html)
 
-    # Debug
-    import re as _re
-    box_count = len(_re.findall(r'boxSubstrate boxSubstrate-offset-0', html))
-    print(f"[SVH] DEBUG: query={query_string[:60]}, cards={len(results)}, boxSubstrate-offset-0={box_count}")
+    box_count = len(re.findall(r"boxSubstrate boxSubstrate-offset-0", html))
+    print(
+        f"[SVH] DEBUG: query={query_string[:60]}, cards={len(results)}, "
+        f"boxSubstrate-offset-0={box_count}, blocked={blocked}, html_len={len(html)}"
+    )
 
-    _cache_set_search(query_string, results)
-    _svh_mem_cache[query_string] = (time.time(), results)
+    if blocked and not results:
+        stale = _cache_get_search(query_string, allow_stale=True)
+        if stale is not None:
+            return stale
+        raise RuntimeError("Alta.ru временно блокирует запросы с сервера. Повторите через минуту.")
+
+    # If the page clearly has cards but parsing failed — try not to poison cache
+    if not results and box_count > 0:
+        results = _parse_svh_cards_regex(html.replace("p-10 ", "").replace(" p-10", ""))
+
+    if results:
+        _cache_set_search(query_string, results)
+        _svh_mem_cache[query_string] = (time.time(), results)
+    else:
+        # Do not cache empty miss for long — may be a transient Alta glitch
+        _svh_mem_cache[query_string] = (time.time(), results)
     return results
 
 
@@ -627,8 +677,10 @@ def _parse_svh_cards_regex(html: str) -> list[dict]:
         )
         search_html = html[col75_start:end_pos]
 
-    # Find all card opening tags
-    card_open_pattern = re.compile(r'class="boxSubstrate boxSubstrate-offset-0 p-10 mb10">')
+    # Find all card opening tags (Alta class list varies: with/without p-10 etc.)
+    card_open_pattern = re.compile(
+        r'class="boxSubstrate boxSubstrate-offset-0[^"]*"[^>]*>'
+    )
     for card_open in card_open_pattern.finditer(search_html):
         start = card_open.end()
 
@@ -777,7 +829,7 @@ def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
 def health():
     return {
         "ok": True,
-        "version": "2026-09-14.2",
+        "version": "2026-09-14.3",
         "data_dir": DATA_DIR,
         "template_exists": os.path.exists(TEMPLATE_PATH),
         "persistent_data": os.path.normpath(DATA_DIR) != os.path.normpath(BUNDLE_DATA_DIR),
@@ -814,7 +866,32 @@ async def search_svh(
         }
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse({"error": f"Не удалось обновить реестр Alta.ru: {e}"}, status_code=502)
+        stale_note = ""
+        try:
+            # Last-ditch: any stale cache for this exact query
+            qs = urlencode({k: v for k, v in query.items() if v}, encoding="utf-8")
+            stale = _cache_get_search(qs, allow_stale=True)
+            if stale:
+                return {
+                    "source": "Alta.ru (кэш)",
+                    "source_url": ALTA_SVH_SEARCH_URL,
+                    "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                    "count": len(stale),
+                    "results": stale,
+                    "warning": f"Живой запрос к Alta.ru не удался ({e}); показан сохранённый результат.",
+                }
+        except Exception:
+            pass
+        return JSONResponse(
+            {
+                "error": (
+                    "Не удалось получить данные Alta.ru. "
+                    "Сервер не достучался до реестра вовремя — повторите через 15–30 секунд. "
+                    f"({e})"
+                )
+            },
+            status_code=502,
+        )
 
 
 @app.get("/api/svh/detail/{license_key}")
