@@ -592,28 +592,47 @@
     svhEl.loading.style.display = 'flex';
     if (svhEl.searchBtn) svhEl.searchBtn.disabled = true;
 
-    var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-    var timer = null;
-    if (controller) {
-      timer = setTimeout(function () { controller.abort(); }, 55000);
+    function requestOnce() {
+      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      var timer = null;
+      if (controller) {
+        timer = setTimeout(function () { controller.abort(); }, 55000);
+      }
+      return fetch(url, controller ? { signal: controller.signal, cache: 'no-store' } : { cache: 'no-store' })
+        .then(function (res) {
+          return res.text().then(function (text) {
+            var data;
+            try {
+              data = text ? JSON.parse(text) : {};
+            } catch (parseErr) {
+              var err = new Error(
+                res.status >= 500
+                  ? 'Сервер не успел получить ответ от Alta.ru (таймаут). Повторите через полминуты.'
+                  : 'Некорректный ответ сервера'
+              );
+              err.retryable = res.status >= 500 || res.status === 0;
+              throw err;
+            }
+            data._httpStatus = res.status;
+            if (res.status >= 500 && data.error) {
+              var e2 = new Error(data.error);
+              e2.retryable = true;
+              throw e2;
+            }
+            return data;
+          });
+        })
+        .finally(function () {
+          if (timer) clearTimeout(timer);
+        });
     }
 
-    fetch(url, controller ? { signal: controller.signal } : undefined)
-      .then(function (res) {
-        return res.text().then(function (text) {
-          var data;
-          try {
-            data = text ? JSON.parse(text) : {};
-          } catch (parseErr) {
-            throw new Error(
-              res.status >= 500
-                ? 'Сервер не успел получить ответ от Alta.ru (таймаут). Повторите через полминуты.'
-                : 'Некорректный ответ сервера'
-            );
-          }
-          data._httpStatus = res.status;
-          return data;
-        });
+    requestOnce()
+      .catch(function (e) {
+        if (e && (e.name === 'AbortError' || e.retryable)) {
+          return new Promise(function (resolve) { setTimeout(resolve, 2500); }).then(requestOnce);
+        }
+        throw e;
       })
       .then(function (data) {
         if (data.error) {
@@ -641,7 +660,6 @@
         showSvhError(msg);
       })
       .finally(function () {
-        if (timer) clearTimeout(timer);
         svhEl.loading.style.display = 'none';
         if (svhEl.searchBtn) svhEl.searchBtn.disabled = false;
       });

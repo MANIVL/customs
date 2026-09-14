@@ -160,6 +160,24 @@ _init_app_db()
 _init_template_storage()
 
 app = FastAPI(title="ТаможенФормат")
+APP_VERSION = "2026-09-14.5"
+
+
+@app.middleware("http")
+async def _frontend_no_cache(request, call_next):
+    """Prevent browsers from keeping a stale app.js that breaks SVH on the public URL."""
+    response = await call_next(request)
+    path = request.url.path or "/"
+    if (
+        path == "/"
+        or path.endswith((".html", ".js", ".css"))
+        or path in ("/index.html", "/app.js", "/style.css")
+    ):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB per file
 MAX_FILES = 30
@@ -830,7 +848,7 @@ def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
 def health():
     return {
         "ok": True,
-        "version": "2026-09-14.4",
+        "version": APP_VERSION,
         "data_dir": DATA_DIR,
         "template_exists": os.path.exists(TEMPLATE_PATH),
         "persistent_data": os.path.normpath(DATA_DIR) != os.path.normpath(BUNDLE_DATA_DIR),
