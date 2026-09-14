@@ -574,13 +574,14 @@ def _http_get_text(url: str, purpose: str) -> str:
         remaining = SVH_HTTP_BUDGET - (time.time() - started)
         if remaining < 3:
             break
-        read_timeout = min(SVH_HTTP_READ_TIMEOUT, max(3, remaining - 1))
+        # urllib timeout must be a single number (not a connect/read tuple).
+        timeout = min(
+            SVH_HTTP_CONNECT_TIMEOUT + SVH_HTTP_READ_TIMEOUT,
+            max(5.0, remaining - 1),
+        )
         try:
             request = Request(url, headers=_alta_headers(purpose))
-            with urlopen(
-                request,
-                timeout=(SVH_HTTP_CONNECT_TIMEOUT, read_timeout),
-            ) as response:
+            with urlopen(request, timeout=timeout) as response:
                 raw = response.read()
                 ctype = (response.headers.get("Content-Type") or "").lower()
                 charset = "utf-8"
@@ -829,7 +830,7 @@ def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
 def health():
     return {
         "ok": True,
-        "version": "2026-09-14.3",
+        "version": "2026-09-14.4",
         "data_dir": DATA_DIR,
         "template_exists": os.path.exists(TEMPLATE_PATH),
         "persistent_data": os.path.normpath(DATA_DIR) != os.path.normpath(BUNDLE_DATA_DIR),
