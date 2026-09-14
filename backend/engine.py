@@ -242,9 +242,12 @@ def find_cert_in_row(ws: Worksheet, row: int, max_col: int = 40) -> dict | None:
     template's "мнр" and "мнр 2" blocks respectively.
     """
     matches: list[dict] = []
-    for c in range(1, min(ws.max_column, max_col) + 1):
-        val = ws.cell(row=row, column=c).value
-        if not isinstance(val, str):
+    for c in range(1, min(ws.max_column or max_col, max_col) + 1):
+        raw = ws.cell(row=row, column=c).value
+        if raw is None:
+            continue
+        val = raw if isinstance(raw, str) else str(raw)
+        if not val.strip():
             continue
         m = CERT_RE.search(val)
         if not m:
@@ -288,7 +291,12 @@ def sheet_priority_key(name: str) -> int:
 # --------------------------------------------------------------------------
 
 def extract_items_from_workbook(wb) -> dict[int, dict]:
-    """Extract items; sum qty on invoice sheets, weights on packing sheets."""
+    """Extract items; sum qty on invoice sheets, weights on packing sheets.
+
+    Certificates are scanned on every sheet that has an article column
+    (invoice / packing / specification / unnamed), then merged onto the
+    matching article. Spec and other sheets also fill empty non-weight fields.
+    """
     tables: list[SheetTable] = []
     for ws in wb.worksheets:
         t = build_sheet_table(ws)
@@ -322,10 +330,19 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
             return "invoice"
         return "other"
 
-    def collect(kind_filter: str) -> dict[str, dict]:
+    def merge_missing(target: dict, source: dict, keys: list[str] | None = None) -> None:
+        for k, v in source.items():
+            if keys is not None and k not in keys:
+                continue
+            if v in (None, ""):
+                continue
+            if target.get(k) in (None, ""):
+                target[k] = v
+
+    def collect(kind_filter: str | None) -> dict[str, dict]:
         by_article: dict[str, dict] = {}
         for t in tables:
-            if sheet_kind(t.sheet_name) != kind_filter:
+            if kind_filter is not None and sheet_kind(t.sheet_name) != kind_filter:
                 continue
             ws = wb[t.sheet_name]
             for _no, row in t.item_rows.items():
@@ -339,8 +356,14 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                 art = rec.get("article")
                 if art in (None, ""):
                     continue
-                blob = " ".join(str(v).lower() for v in rec.values())
-                if "sum" in blob or "всего" in blob or "паллет" in blob:
+                art_l = str(art).lower()
+                name_l = str(rec.get("name") or "").lower()
+                # Only skip summary/pallet totals — do not scan every field
+                # (e.g. cll/package text with «паллет» must not drop certs).
+                if any(
+                    m in art_l or m in name_l
+                    for m in ("sum", "total", "всего", "паллет")
+                ):
                     continue
                 key = normalize(art)
                 if key not in by_article:
@@ -358,27 +381,12 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
 
     invoice = collect("invoice")
     packing = collect("packing")
+    other = collect("other")
+
+    # Unnamed / specification-only workbooks: treat "other" as the main source.
     if not invoice and not packing:
-        # unnamed sheets: treat all as invoice-like
-        for t in tables:
-            ws = wb[t.sheet_name]
-            for _no, row in t.item_rows.items():
-                rec = {}
-                for field_key, col in t.columns.items():
-                    if field_key == "no":
-                        continue
-                    val = ws.cell(row=row, column=col).value
-                    if val not in (None, ""):
-                        rec[field_key] = val
-                art = rec.get("article")
-                if art in (None, ""):
-                    continue
-                key = normalize(art)
-                if key not in invoice:
-                    invoice[key] = dict(rec)
-                else:
-                    for k, v in rec.items():
-                        add_num(invoice[key], k, v)
+        invoice = other
+        other = {}
 
     order = list(invoice.keys())
     for key, rec in packing.items():
@@ -386,8 +394,15 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
             for f in weight_fields:
                 if rec.get(f) not in (None, ""):
                     invoice[key][f] = rec[f]
-            if invoice[key].get("name") in (None, "") and rec.get("name") not in (None, ""):
-                invoice[key]["name"] = rec["name"]
+            merge_missing(invoice[key], rec, CERT_FIELDS + ["name"])
+        else:
+            invoice[key] = dict(rec)
+            order.append(key)
+
+    # Spec and other sheets often hold certificates and extra fields.
+    for key, rec in other.items():
+        if key in invoice:
+            merge_missing(invoice[key], rec)
         else:
             invoice[key] = dict(rec)
             order.append(key)

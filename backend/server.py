@@ -101,10 +101,18 @@ def _db():
     finally:
         conn.close()
 
-def _cache_get_search(query_key: str) -> list[dict] | None:
+SVH_SEARCH_CACHE_TTL = 600  # 10 minutes
+SVH_DETAIL_CACHE_TTL = 1800  # 30 minutes
+SVH_HTTP_TIMEOUT = 45
+SVH_HTTP_RETRIES = 3
+
+def _cache_get_search(query_key: str, *, allow_stale: bool = False) -> list[dict] | None:
     with _db() as db:
         row = db.execute("SELECT results, fetched_at FROM svh_search WHERE query_key = ?", (query_key,)).fetchone()
-    if row and (time.monotonic() - row["fetched_at"]) < 120:
+    if not row:
+        return None
+    age = time.time() - row["fetched_at"]
+    if allow_stale or age < SVH_SEARCH_CACHE_TTL:
         return json.loads(row["results"])
     return None
 
@@ -112,13 +120,16 @@ def _cache_set_search(query_key: str, results: list[dict]):
     with _db() as db:
         db.execute(
             "INSERT OR REPLACE INTO svh_search (query_key, results, fetched_at) VALUES (?, ?, ?)",
-            (query_key, json.dumps(results, ensure_ascii=False), time.monotonic()),
+            (query_key, json.dumps(results, ensure_ascii=False), time.time()),
         )
 
-def _cache_get_detail(license_key: str) -> dict | None:
+def _cache_get_detail(license_key: str, *, allow_stale: bool = False) -> dict | None:
     with _db() as db:
         row = db.execute("SELECT data, fetched_at FROM svh_detail WHERE license_key = ?", (license_key,)).fetchone()
-    if row and (time.monotonic() - row["fetched_at"]) < 300:
+    if not row:
+        return None
+    age = time.time() - row["fetched_at"]
+    if allow_stale or age < SVH_DETAIL_CACHE_TTL:
         return json.loads(row["data"])
     return None
 
@@ -126,7 +137,7 @@ def _cache_set_detail(license_key: str, data: dict):
     with _db() as db:
         db.execute(
             "INSERT OR REPLACE INTO svh_detail (license_key, data, fetched_at) VALUES (?, ?, ?)",
-            (license_key, json.dumps(data, ensure_ascii=False), time.monotonic()),
+            (license_key, json.dumps(data, ensure_ascii=False), time.time()),
         )
 
 def _cache_clear():
@@ -425,23 +436,56 @@ class _AltaSvhDetailParser(HTMLParser):
                 return
 
 
+def _alta_headers(purpose: str) -> dict[str, str]:
+    return {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            f"Chrome/122.0.0.0 Safari/537.36 TamozhenFormat/1.0 ({purpose})"
+        ),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "ru-RU,ru;q=0.9,en;q=0.8",
+        "Connection": "close",
+    }
+
+
+def _http_get_text(url: str, purpose: str) -> str:
+    """GET Alta.ru HTML with retries; raises the last error on total failure."""
+    last_err: Exception | None = None
+    for attempt in range(1, SVH_HTTP_RETRIES + 1):
+        try:
+            request = Request(url, headers=_alta_headers(purpose))
+            with urlopen(request, timeout=SVH_HTTP_TIMEOUT) as response:
+                return response.read().decode("utf-8", errors="replace")
+        except Exception as e:
+            last_err = e
+            print(f"[SVH] {purpose} attempt {attempt}/{SVH_HTTP_RETRIES} failed: {e}")
+            if attempt < SVH_HTTP_RETRIES:
+                time.sleep(1.5 * attempt)
+    assert last_err is not None
+    raise last_err
+
+
 def _fetch_svh(query: dict[str, str]) -> list[dict]:
     query_string = urlencode({key: value for key, value in query.items() if value})
     # Check in-memory cache first
     mem = _svh_mem_cache.get(query_string)
-    if mem and time.monotonic() - mem[0] < 30:
+    if mem and time.time() - mem[0] < 60:
         return mem[1]
     # Check SQLite cache
     cached = _cache_get_search(query_string)
     if cached is not None:
-        _svh_mem_cache[query_string] = (time.monotonic(), cached)
+        _svh_mem_cache[query_string] = (time.time(), cached)
         return cached
-    request = Request(
-        f"{ALTA_SVH_SEARCH_URL}?{query_string}",
-        headers={"User-Agent": "TamozhenFormat/1.0 (SVH registry search)"},
-    )
-    with urlopen(request, timeout=15) as response:
-        html = response.read().decode("utf-8", errors="replace")
+    try:
+        html = _http_get_text(f"{ALTA_SVH_SEARCH_URL}?{query_string}", "SVH search")
+    except Exception:
+        stale = _cache_get_search(query_string, allow_stale=True)
+        if stale is not None:
+            print(f"[SVH] serving stale cache for query={query_string[:60]}")
+            _svh_mem_cache[query_string] = (time.time(), stale)
+            return stale
+        raise
 
     results = _parse_svh_cards_regex(html)
 
@@ -451,7 +495,7 @@ def _fetch_svh(query: dict[str, str]) -> list[dict]:
     print(f"[SVH] DEBUG: query={query_string[:60]}, cards={len(results)}, boxSubstrate-offset-0={box_count}")
 
     _cache_set_search(query_string, results)
-    _svh_mem_cache[query_string] = (time.monotonic(), results)
+    _svh_mem_cache[query_string] = (time.time(), results)
     return results
 
 
@@ -576,12 +620,14 @@ def _fetch_svh_detail(license_url: str) -> dict | None:
     if cached is not None:
         return cached
     url = license_url if license_url.startswith("http") else ALTA_SVH_DETAIL_URL + license_key + "/"
-    request = Request(
-        url,
-        headers={"User-Agent": "TamozhenFormat/1.0 (SVH detail)"},
-    )
-    with urlopen(request, timeout=15) as response:
-        html = response.read().decode("utf-8", errors="replace")
+    try:
+        html = _http_get_text(url, "SVH detail")
+    except Exception:
+        stale = _cache_get_detail(license_key, allow_stale=True)
+        if stale is not None:
+            print(f"[SVH] serving stale detail cache for {license_key}")
+            return stale
+        raise
     parser = _AltaSvhDetailParser()
     parser.feed(html)
     result = parser.result
@@ -602,13 +648,8 @@ def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
             all_cards.extend(cached_page)
             continue
         url = f"{ALTA_SVH_SEARCH_URL}" if page == 1 else f"{ALTA_SVH_SEARCH_URL}page_{page}/"
-        request = Request(
-            url,
-            headers={"User-Agent": "TamozhenFormat/1.0 (SVH full registry)"},
-        )
         try:
-            with urlopen(request, timeout=15) as response:
-                html = response.read().decode("utf-8", errors="replace")
+            html = _http_get_text(url, "SVH full registry")
             parser = _AltaSvhParser()
             parser.feed(html)
             page_cards = parser.cards
