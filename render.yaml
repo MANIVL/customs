@@ -2,16 +2,23 @@ services:
   - type: web
     name: tamozhenformat
     runtime: python
-    plan: free
+    # Persistent disk requires a paid instance (not available on free).
+    plan: starter
     region: frankfurt
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn server:app --app-dir backend --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
+    disk:
+      name: tamozhenformat-data
+      mountPath: /var/data
+      sizeGB: 1
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: APP_OPEN_BROWSER
         value: "0"
+      - key: DATA_DIR
+        value: /var/data
       - key: YANDEX_API_KEY
         sync: false
       - key: YANDEX_FOLDER_ID

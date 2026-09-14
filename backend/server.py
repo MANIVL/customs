@@ -30,24 +30,134 @@ from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
-DATA_DIR = os.path.join(BASE_DIR, "data")
+# Bundled defaults live next to the code (shipped in the image / repo).
+BUNDLE_DATA_DIR = os.path.join(BASE_DIR, "data")
+DEFAULT_TEMPLATE_PATH = os.path.join(BUNDLE_DATA_DIR, "default_template.xlsx")
+
+# Mutable runtime data (template upload, SVH cache). On Render point DATA_DIR
+# at a persistent disk mount so uploads survive restarts/redeploys.
+DATA_DIR = os.environ.get("DATA_DIR") or BUNDLE_DATA_DIR
 os.makedirs(DATA_DIR, exist_ok=True)
 TEMPLATE_PATH = os.path.join(DATA_DIR, "current_template.xlsx")
-DEFAULT_TEMPLATE_PATH = os.path.join(DATA_DIR, "default_template.xlsx")
 META_PATH = os.path.join(DATA_DIR, "template_meta.json")
 SVH_DB_PATH = os.path.join(DATA_DIR, "svh_cache.db")
+APP_DB_PATH = os.path.join(DATA_DIR, "app_state.db")
 
-if not os.path.exists(TEMPLATE_PATH) and os.path.exists(DEFAULT_TEMPLATE_PATH):
-    shutil.copy(DEFAULT_TEMPLATE_PATH, TEMPLATE_PATH)
-    with open(META_PATH, "w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "filename": "etalonnyi-shablon.xlsx",
-                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            },
-            f,
-            ensure_ascii=False,
+
+def _init_template_storage() -> None:
+    """Ensure current template exists; restore from SQLite backup or bundled default."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    if os.path.exists(TEMPLATE_PATH):
+        # Backfill durable blob if file exists but DB is empty (first boot on new disk).
+        try:
+            if _load_template_blob() is None:
+                meta = {}
+                if os.path.exists(META_PATH):
+                    with open(META_PATH, encoding="utf-8") as f:
+                        meta = json.load(f)
+                with open(TEMPLATE_PATH, "rb") as f:
+                    content = f.read()
+                _save_template_blob(
+                    content,
+                    meta.get("filename") or "template.xlsx",
+                    meta.get("updated_at")
+                    or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                )
+        except Exception:
+            traceback.print_exc()
+        return
+    # Prefer durable SQLite copy (same DATA_DIR / disk)
+    try:
+        restored = _load_template_blob()
+        if restored:
+            with open(TEMPLATE_PATH, "wb") as f:
+                f.write(restored["content"])
+            if not os.path.exists(META_PATH):
+                with open(META_PATH, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "filename": restored.get("filename") or "template.xlsx",
+                            "updated_at": restored.get("updated_at")
+                            or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                        },
+                        f,
+                        ensure_ascii=False,
+                    )
+            return
+    except Exception:
+        traceback.print_exc()
+    if os.path.exists(DEFAULT_TEMPLATE_PATH):
+        shutil.copy(DEFAULT_TEMPLATE_PATH, TEMPLATE_PATH)
+        updated_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        meta = {
+            "filename": "etalonnyi-shablon.xlsx",
+            "updated_at": updated_at,
+        }
+        with open(META_PATH, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False)
+        try:
+            with open(TEMPLATE_PATH, "rb") as f:
+                _save_template_blob(f.read(), meta["filename"], updated_at)
+        except Exception:
+            traceback.print_exc()
+
+
+def _get_app_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(APP_DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+
+def _init_app_db() -> None:
+    with _get_app_db() as db:
+        db.execute(
+            """
+            CREATE TABLE IF NOT EXISTS template_blob (
+                id          INTEGER PRIMARY KEY CHECK (id = 1),
+                filename    TEXT NOT NULL,
+                content     BLOB NOT NULL,
+                updated_at  TEXT NOT NULL
+            )
+            """
         )
+        db.commit()
+
+
+def _save_template_blob(content: bytes, filename: str, updated_at: str) -> None:
+    with _get_app_db() as db:
+        db.execute(
+            """
+            INSERT INTO template_blob (id, filename, content, updated_at)
+            VALUES (1, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                filename=excluded.filename,
+                content=excluded.content,
+                updated_at=excluded.updated_at
+            """,
+            (filename, content, updated_at),
+        )
+
+
+def _load_template_blob() -> dict | None:
+    if not os.path.exists(APP_DB_PATH):
+        return None
+    with _get_app_db() as db:
+        row = db.execute(
+            "SELECT filename, content, updated_at FROM template_blob WHERE id = 1"
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        "filename": row["filename"],
+        "content": bytes(row["content"]),
+        "updated_at": row["updated_at"],
+    }
+
+
+_init_app_db()
+_init_template_storage()
 
 app = FastAPI(title="ТаможенФормат")
 
@@ -665,7 +775,11 @@ def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    return {
+        "ok": True,
+        "data_dir": DATA_DIR,
+        "template_exists": os.path.exists(TEMPLATE_PATH),
+    }
 
 
 @app.get("/api/svh/search")
@@ -851,6 +965,10 @@ async def upload_template(file: UploadFile = File(...)):
     }
     with open(META_PATH, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False)
+    try:
+        _save_template_blob(content, meta["filename"], meta["updated_at"])
+    except Exception:
+        traceback.print_exc()
     return {"exists": True, **meta}
 
 

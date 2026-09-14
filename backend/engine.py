@@ -43,7 +43,7 @@ import excel_io
 HEADER_KEYWORDS: dict[str, list[str]] = {
     "no": ["№", "no.", "no /"],
     "tariff_code": ["tariff code", "код товара", "тн вэд", "hs code"],
-    "name": ["name of product", "наименование товара", "наименование", "description"],
+    "name": ["name of product", "наименование товара", "наименование", "описание", "description"],
     "article": ["article", "артикул", "sku"],
     "marks": ["marks /", "торговая марка", "бренд", "brand"],
     "manufacturer": ["manufacturer", "производитель"],
@@ -157,16 +157,142 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
     columns: dict[str, int] = {}
     if no_col:
         columns["no"] = no_col
-    for c in range(1, max_col + 1):
-        norm = normalize(ws.cell(row=header_row, column=c).value)
-        if not norm:
-            continue
-        for fkey, keywords in HEADER_KEYWORDS.items():
-            if fkey in columns:
+
+    def absorb_header_row(r: int) -> None:
+        for c in range(1, max_col + 1):
+            norm = normalize(ws.cell(row=r, column=c).value)
+            if not norm:
                 continue
-            if any(kw in norm for kw in keywords):
-                columns[fkey] = c
+            for fkey, keywords in HEADER_KEYWORDS.items():
+                if not any(kw in norm for kw in keywords):
+                    continue
+                # Prefer article over a generic "описание товара" on the same column
+                if c in columns.values() and fkey != "article":
+                    continue
+                if fkey in columns and fkey != "article":
+                    continue
+                if fkey == "article":
+                    # displace name if it occupied this column
+                    for k, col in list(columns.items()):
+                        if col == c and k != "article":
+                            del columns[k]
+                    columns["article"] = c
+                elif fkey not in columns:
+                    columns[fkey] = c
                 break
+
+    absorb_header_row(header_row)
+    # Two-line headers: «Описание товара / Кол-во / Цена» above «артикул | описание»
+    for probe in (header_row - 2, header_row - 1, header_row + 1, header_row + 2):
+        if probe < 1 or probe > (ws.max_row or probe):
+            continue
+        absorb_header_row(probe)
+    if "article" in columns and columns.get("name") == columns.get("article"):
+        for probe in (header_row, header_row + 1, header_row + 2):
+            if probe > (ws.max_row or probe):
+                break
+            for c in range(1, max_col + 1):
+                norm = normalize(ws.cell(row=probe, column=c).value)
+                if any(kw in norm for kw in HEADER_KEYWORDS["name"]) and c != columns["article"]:
+                    columns["name"] = c
+                    break
+            if columns.get("name") != columns.get("article"):
+                break
+
+    # «Цена» / «Итого» often label the currency sub-column; shift to numeric neighbor.
+    def _col_is_currency(c: int, probe_from: int) -> bool:
+        hits = 0
+        nums = 0
+        for rr in range(probe_from, min(probe_from + 8, (ws.max_row or probe_from) + 1)):
+            val = ws.cell(row=rr, column=c).value
+            if val in (None, ""):
+                continue
+            s = str(val).strip().upper()
+            if s in {"USD", "EUR", "CNY", "RMB", "RUR", "RUB", "GBP", "$", "€", "¥"}:
+                hits += 1
+            else:
+                try:
+                    float(str(val).replace(",", ".").replace(" ", ""))
+                    nums += 1
+                except Exception:
+                    pass
+        return hits > nums and hits > 0
+
+    data_probe = header_row + 1
+    for field in ("price", "amount"):
+        col = columns.get(field)
+        if not col or not _col_is_currency(col, data_probe):
+            continue
+        for cand in (col + 1, col + 2, col - 1):
+            if cand < 1 or cand in columns.values():
+                continue
+            if not _col_is_currency(cand, data_probe):
+                # ensure it has numbers
+                has_num = False
+                for rr in range(data_probe, min(data_probe + 8, (ws.max_row or data_probe) + 1)):
+                    val = ws.cell(row=rr, column=cand).value
+                    if isinstance(val, (int, float)):
+                        has_num = True
+                        break
+                if has_num:
+                    columns[field] = cand
+                    break
+
+    # Infer article/name columns from values when headers omit them (common on PL).
+    if "article" not in columns:
+        best_c = None
+        best_hits = 0
+        unit_like = {"шт", "шт.", "pcs", "pc", "kg", "кг", "кор", "кор.", "ctn", "rmb", "usd", "cny"}
+        for c in range(1, min(max_col, 15) + 1):
+            owner = next((k for k, col in columns.items() if col == c), None)
+            if owner and owner not in {"name"}:  # may displace generic name group-header
+                continue
+            hits = 0
+            for rr in range(header_row + 1, min(header_row + 12, (ws.max_row or header_row) + 1)):
+                val = ws.cell(row=rr, column=c).value
+                if not isinstance(val, str):
+                    continue
+                s = val.strip()
+                if not s or " " in s or len(s) < 4 or len(s) > 40:
+                    continue
+                if s.lower().rstrip(".") in unit_like:
+                    continue
+                if s.lower() in {"артикул", "article", "sku"}:
+                    continue
+                if re.match(r"^[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._\-/]{2,40}$", s) and not s.replace(".", "").isdigit():
+                    hits += 1
+            if hits > best_hits:
+                best_hits = hits
+                best_c = c
+        if best_c and best_hits >= 2:
+            for k, col in list(columns.items()):
+                if col == best_c and k != "article":
+                    del columns[k]
+            columns["article"] = best_c
+    if "name" not in columns and "article" in columns:
+        cand = columns["article"] + 1
+        if cand not in columns.values():
+            name_hits = 0
+            for rr in range(header_row + 1, min(header_row + 12, (ws.max_row or header_row) + 1)):
+                val = ws.cell(row=rr, column=cand).value
+                if isinstance(val, str) and " " in val.strip() and len(val.strip()) >= 8:
+                    name_hits += 1
+            if name_hits >= 2:
+                columns["name"] = cand
+    # If name was wrongly assigned to article-like col 2 before article inference
+    if "article" in columns and "name" in columns and columns["name"] < columns["article"]:
+        # swap if values suggest it
+        art_c, name_c = columns["article"], columns["name"]
+        art_hits = name_hits = 0
+        for rr in range(header_row + 1, min(header_row + 8, (ws.max_row or header_row) + 1)):
+            a = ws.cell(row=rr, column=art_c).value
+            n = ws.cell(row=rr, column=name_c).value
+            if isinstance(a, str) and " " not in a.strip() and len(a.strip()) >= 4:
+                art_hits += 1
+            if isinstance(n, str) and " " in n.strip():
+                name_hits += 1
+        if art_hits < 2 and name_hits >= 2:
+            columns["article"], columns["name"] = name_c, art_c
 
     # Walk down collecting item rows.
     item_rows: dict[int, int] = {}
@@ -179,6 +305,31 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
     if not anchor_col:
         return None
 
+    # Skip category / sub-header lines until first article-like cell
+    if "article" in columns:
+        while r <= max_row:
+            art = ws.cell(row=r, column=columns["article"]).value
+            if isinstance(art, str) and art.strip() and art.strip().lower() not in {
+                "артикул", "article", "sku", "описание", "description"
+            }:
+                # require code-like or keep and let filters handle
+                break
+            if art not in (None, "") and not isinstance(art, str):
+                break
+            # blank or header-ish
+            if isinstance(art, str) and art.strip().lower() in {
+                "артикул", "article", "sku", "описание", "description"
+            }:
+                r += 1
+                continue
+            # category row without article code — skip a few
+            r += 1
+            if r > header_row + 5:
+                r = header_row + 1
+                break
+
+    start_r = r
+    r = start_r
     while r <= max_row:
         if "no" in columns:
             val = ws.cell(row=r, column=columns["no"]).value
@@ -192,9 +343,13 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
         else:
             art = ws.cell(row=r, column=anchor_col).value
             if art not in (None, ""):
-                seq += 1
-                item_rows[seq] = r
-                blank_streak = 0
+                art_s = str(art).strip().lower()
+                if art_s not in {"артикул", "article", "sku", "описание", "description"}:
+                    seq += 1
+                    item_rows[seq] = r
+                    blank_streak = 0
+                else:
+                    blank_streak += 1
             else:
                 blank_streak += 1
                 if blank_streak >= 3:
@@ -211,11 +366,12 @@ def _find_header_without_no(ws: Worksheet, max_scan_rows: int = 60, max_scan_col
     """Find a header row that contains article/name/qty-like labels without a № column."""
     max_row = min(ws.max_row, max_scan_rows)
     max_col = min(ws.max_column, max_scan_cols)
-    keys = ("article", "name", "qty", "price", "amount", "net_weight")
+    keys = ("article", "name", "qty", "price", "amount", "net_weight", "gross_weight")
     best = None
     best_score = 0
     for r in range(1, max_row + 1):
         hits = 0
+        has_article = False
         for c in range(1, max_col + 1):
             norm = normalize(ws.cell(row=r, column=c).value)
             if not norm:
@@ -223,9 +379,12 @@ def _find_header_without_no(ws: Worksheet, max_scan_rows: int = 60, max_scan_col
             for fkey in keys:
                 if any(kw in norm for kw in HEADER_KEYWORDS[fkey]):
                     hits += 1
+                    if fkey == "article":
+                        has_article = True
                     break
-        if hits > best_score:
-            best_score = hits
+        score = hits + (3 if has_article else 0)
+        if score > best_score:
+            best_score = score
             best = r
     if best_score >= 2:
         return best, None
@@ -324,6 +483,11 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
 
     def sheet_kind(name: str) -> str:
         n = normalize(name)
+        compact = re.sub(r"[^a-zа-яё0-9]+", "", n)
+        if compact in {"pl", "packing", "packinglist", "пакинг", "упаковка"}:
+            return "packing"
+        if compact in {"inv", "invoice", "инвойс", "инв"}:
+            return "invoice"
         if any(k in n for k in ("pack", "пак", "pl(", "pl ")):
             return "packing"
         if any(k in n for k in ("invoice", "инвойс", "in (", "in(")):
@@ -364,6 +528,15 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                     m in art_l or m in name_l
                     for m in ("sum", "total", "всего", "паллет")
                 ):
+                    continue
+                if art_l.startswith("shipping") or art_l.startswith("packing") or art_l.startswith("order no"):
+                    continue
+                if art_l.startswith("measurement") or "контейнер" in art_l:
+                    continue
+                if art_l in {"артикул", "article", "sku", "шт", "шт."}:
+                    continue
+                # Category section titles without qty
+                if rec.get("qty") in (None, "") and rec.get("price") in (None, "") and " " in str(art):
                     continue
                 key = normalize(art)
                 if key not in by_article:

@@ -38,21 +38,28 @@ FIELD_HINTS = {
     "mnr_code": "код вида документа МНР",
 }
 
-# Exact-ish header → field (checked before AI). Longer phrases first.
+# Exact-ish header → field (checked before AI). Article before generic "описание".
 HEADER_EXACT = [
-    ("наименование товара", "name"),
-    ("name of product", "name"),
-    ("наименование", "name"),
-    ("описание", "name"),
-    ("description", "name"),
     ("артикул", "article"),
     ("article", "article"),
     ("sku", "article"),
+    ("model no", "article"),
+    ("model", "article"),
+    ("наименование товара", "name"),
+    ("name of product", "name"),
+    ("наименование", "name"),
+    ("описание товара", "name"),  # group title — may be overridden by samples
+    ("описание", "name"),
+    ("description", "name"),
     ("код товара", "tariff_code"),
     ("тн вэд", "tariff_code"),
     ("tariff", "tariff_code"),
     ("кол-во мест", "cll"),
     ("количество мест", "cll"),
+    ("number of units", "cll"),
+    ("cartons", "cll"),
+    ("кол-во кор", "cll"),
+    ("кол во кор", "cll"),
     ("кол-во", "qty"),
     ("количество", "qty"),
     ("q-ty", "qty"),
@@ -75,30 +82,49 @@ HEADER_EXACT = [
     ("manufacturer", "manufacturer"),
     ("торговая марка", "marks"),
     ("brand", "marks"),
+    # Short tokens last — matched as whole words only (see _header_phrase_match)
+    ("кор", "cll"),
+    ("ctn", "cll"),
 ]
 
 ARTICLE_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._\-/]{1,40}$")
+CURRENCY_RE = re.compile(
+    r"^(USD|EUR|CNY|RMB|RUR|RUB|GBP|JPY|CHF|HKD|\$|€|¥)$",
+    re.IGNORECASE,
+)
+UNIT_TOKENS = frozenset({
+    "шт", "шт.", "pcs", "pc", "kg", "кг", "кg", "кор", "кор.", "ctn", "carton", "cartons",
+})
+HEADER_LIKE_ARTICLES = frozenset({
+    "артикул", "article", "sku", "описание", "description", "наименование",
+    "name", "model", "модель",
+})
 SKIP_ROW_MARKERS = (
     "всего", "итого", "total", "сумма:", "subtotal", "grand total",
     "sum", "the seller", "seller:", "buyer", "consignee", "паллет всего",
-    "всес паллет", "всего паллет", "境内货源地",
+    "всес паллет", "всего паллет", "境内货源地", "shipping marks",
+    "packing:", "measurement:", "order no", "контейнер", "container",
 )
 SUM_FIELDS = frozenset({"qty", "amount", "net_weight", "gross_weight", "cll"})
 
 SYSTEM_PROMPT = """Ты помощник по таможенным Excel-документам.
-Тебе дают листы: заголовки с номерами столбцов (col) и примеры ячеек {col: значение}.
+Тебе дают листы: заголовки с номерами столбцов (col), подзаголовки и примеры ячеек {col: значение}.
 
 Сопоставь столбцы с каноническими полями. Ключи полей:
 """ + "\n".join(f"- {k}: {FIELD_HINTS[k]}" for k in CANONICAL_FIELDS) + """
 
 ЖЁСТКИЕ ПРАВИЛА:
-1) «Артикул» / Article / SKU → ТОЛЬКО article. Туда короткие коды (E2903-00), НЕ описание товара.
-2) «Наименование» / Name / Description → ТОЛЬКО name. Туда длинный текст («ванна …»), НЕ артикул.
-3) Нельзя назначить один столбец двум полям.
-4) Смотри примеры значений: если в столбце коды без пробелов — это article; если фразы — name.
-5) Столбцы только с «шт», «кг», «CNY», «USD» не мапь.
-6) Ответ — ТОЛЬКО JSON-массив (без markdown):
-[{"sheet":"имя","header_row":N,"data_start_row":M,"mapping":{"article":2,"name":3,"qty":4}}]
+1) «Артикул» / Article / SKU → ТОЛЬКО article. Туда короткие коды (EDAY132RU-00), НЕ описание товара.
+2) «Наименование» / Name / Description / описание → ТОЛЬКО name. Туда длинный текст, НЕ артикул.
+3) Часто бывает ДВУХСТРОЧНЫЙ заголовок: сверху «Описание товара / Кол-во / Цена», снизу «артикул | описание».
+   Тогда article и name бери из нижней строки; qty/price/amount — из верхней или по числам в примерах.
+4) Нельзя назначить один столбец двум полям.
+5) Столбцы только с «шт», «кг», «кор», «RMB», «CNY», «USD» — это unit/валюта, НЕ price/amount/qty.
+   Если рядом с валютой есть число (RMB | 345.6) — price/amount = столбец с ЧИСЛОМ.
+6) На packing list мапь net_weight / gross_weight / cll (места/кор) и обязательно article+name, если они есть в примерах.
+7) data_start_row — первая строка с реальным артикулом (не «артикул», не категория, не контейнер).
+8) Ответ — ТОЛЬКО JSON-массив (без markdown):
+[{"sheet":"имя","header_row":N,"data_start_row":M,"mapping":{"article":2,"name":3,"qty":4,"price":9,"amount":12}}]
 col в mapping — 1-based номер столбца Excel.
 """
 
@@ -115,6 +141,8 @@ def _looks_like_article(val: Any) -> bool:
     s = _cell_str(val)
     if not s or " " in s or len(s) > 40:
         return False
+    if s.lower() in HEADER_LIKE_ARTICLES:
+        return False
     return bool(ARTICLE_RE.match(s)) and not s.replace(".", "").isdigit()
 
 
@@ -122,7 +150,18 @@ def _looks_like_name(val: Any) -> bool:
     s = _cell_str(val)
     if not s:
         return False
+    if s.lower() in HEADER_LIKE_ARTICLES:
+        return False
     return (" " in s and len(s) >= 8) or len(s) >= 20
+
+
+def _looks_like_currency(val: Any) -> bool:
+    return bool(CURRENCY_RE.match(_cell_str(val)))
+
+
+def _looks_like_unit(val: Any) -> bool:
+    s = _cell_str(val).lower().rstrip(".")
+    return s in UNIT_TOKENS
 
 
 def _find_candidate_header_rows(ws: Worksheet, max_scan: int = 50) -> list[int]:
@@ -130,11 +169,12 @@ def _find_candidate_header_rows(ws: Worksheet, max_scan: int = 50) -> list[int]:
     max_col = min(ws.max_column or 1, 30)
     scored: list[tuple[int, int, int]] = []
     keyword_bags = [engine.HEADER_KEYWORDS[k] for k in (
-        "article", "name", "qty", "price", "amount", "net_weight", "gross_weight", "no", "tariff_code"
+        "article", "name", "qty", "price", "amount", "net_weight", "gross_weight", "no", "tariff_code", "cll"
     )]
     for r in range(1, max_row + 1):
         texts = []
         hits = 0
+        has_article = False
         for c in range(1, max_col + 1):
             v = ws.cell(r, c).value
             if not isinstance(v, str) or not v.strip():
@@ -144,59 +184,148 @@ def _find_candidate_header_rows(ws: Worksheet, max_scan: int = 50) -> list[int]:
             norm = engine.normalize(text)
             if any(any(kw in norm for kw in bag) for bag in keyword_bags):
                 hits += 1
-        if len(texts) < 2:
+            if "артикул" in norm or norm in {"article", "sku"}:
+                has_article = True
+        if len(texts) < 2 and not has_article:
             continue
-        score = hits * 10 + len(texts)
-        if hits >= 2 or len(texts) >= 4:
+        score = hits * 10 + len(texts) + (25 if has_article else 0)
+        if hits >= 2 or len(texts) >= 4 or has_article:
             scored.append((score, len(texts), r))
     scored.sort(reverse=True)
-    return [r for _s, _n, r in scored[:5]] or [1]
+    return [r for _s, _n, r in scored[:8]] or [1]
+
+
+def _headers_from_rows(ws: Worksheet, rows: list[int], max_col: int) -> list[dict]:
+    """Collect labeled cells from one or more header/subheader rows."""
+    by_col: dict[int, str] = {}
+    for r in rows:
+        for c in range(1, max_col + 1):
+            text = _cell_str(ws.cell(r, c).value)
+            if not text:
+                continue
+            # Prefer more specific later labels (артикул over Описание товара)
+            prev = by_col.get(c, "")
+            prev_n = engine.normalize(prev)
+            cur_n = engine.normalize(text)
+            if not prev:
+                by_col[c] = text
+            elif ("артикул" in cur_n or cur_n == "article") and "артикул" not in prev_n:
+                by_col[c] = text
+            elif ("описание" in cur_n or "наименование" in cur_n) and len(text) <= len(prev):
+                by_col[c] = text
+    return [{"col": c, "text": by_col[c]} for c in sorted(by_col)]
+
+
+def _header_phrase_match(phrase: str, norm: str) -> bool:
+    """Substring match for long phrases; whole-token match for short ones."""
+    if not phrase or not norm:
+        return False
+    if len(phrase) <= 3:
+        tokens = re.split(r"[^\wа-яё]+", norm, flags=re.IGNORECASE)
+        return phrase in tokens
+    return phrase in norm
 
 
 def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
-    """Deterministic mapping from clear header labels."""
-    mapping: dict[str, int] = {}
-    used_cols: set[int] = set()
+    """Deterministic mapping from clear header labels; article wins over name on same col."""
+    field_cols: dict[str, int] = {}
+    col_field: dict[int, str] = {}
+    priority = {
+        "article": 100, "name": 90, "qty": 80, "price": 70, "amount": 70,
+        "net_weight": 75, "gross_weight": 75, "cll": 65, "no": 95, "tariff_code": 85,
+        "marks": 40, "manufacturer": 40, "country": 40, "unit": 30,
+    }
+
+    def assign(field: str, col: int) -> None:
+        if field not in CANONICAL_FIELDS:
+            return
+        old_field = col_field.get(col)
+        if old_field and priority.get(old_field, 0) > priority.get(field, 0):
+            return
+        if old_field and old_field in field_cols and field_cols[old_field] == col:
+            del field_cols[old_field]
+        if field in field_cols and field_cols[field] != col:
+            return
+        field_cols[field] = col
+        col_field[col] = field
+
     for h in headers:
         norm = engine.normalize(h["text"])
         if not norm:
             continue
+        # Skip long free-text / codes mistaken for headers
+        if len(norm) > 40 or _looks_like_article(h["text"]) or _looks_like_name(h["text"]):
+            # still allow exact short labels
+            if not any(_header_phrase_match(p, norm) for p, _f in HEADER_EXACT if len(p) <= 12):
+                continue
         for phrase, field in HEADER_EXACT:
-            if phrase in norm and field not in mapping and h["col"] not in used_cols:
-                # Avoid matching bare "марка" inside unrelated words if needed — phrase list is ordered
-                mapping[field] = h["col"]
-                used_cols.add(h["col"])
+            if _header_phrase_match(phrase, norm):
+                assign(field, h["col"])
                 break
-    return mapping
+    return field_cols
+
+
+def _wide_samples(ws: Worksheet, start_row: int, max_col: int, limit: int = 8) -> list[dict]:
+    samples = []
+    max_row = ws.max_row or start_row
+    for r in range(start_row, min(start_row + 12, max_row + 1)):
+        cells = {}
+        for c in range(1, max_col + 1):
+            val = _cell_str(ws.cell(r, c).value)
+            if val:
+                cells[str(c)] = val[:120]
+        if len(cells) >= 2:
+            samples.append({"row": r, "cells": cells})
+        if len(samples) >= limit:
+            break
+    return samples
 
 
 def summarize_sheet(ws: Worksheet) -> dict:
     max_col = min(ws.max_column or 1, 25)
     header_candidates = _find_candidate_header_rows(ws)
     best = header_candidates[0]
-    headers = []
-    for c in range(1, max_col + 1):
-        text = _cell_str(ws.cell(best, c).value)
-        if text:
-            headers.append({"col": c, "text": text})
+    # Include nearby label rows only (skip numeric data rows mistaken as candidates)
+    header_rows = [best]
 
-    samples = []
-    for r in range(best + 1, min(best + 8, (ws.max_row or best) + 1)):
-        cells = {}
-        for h in headers:
-            val = _cell_str(ws.cell(r, h["col"]).value)
-            if val:
-                cells[str(h["col"])] = val
-        if cells:
-            samples.append({"row": r, "cells": cells})
+    def row_label_score(r: int) -> int:
+        score = 0
+        for c in range(1, max_col + 1):
+            v = ws.cell(r, c).value
+            if not isinstance(v, str):
+                continue
+            norm = engine.normalize(v)
+            if not norm or _to_number(v) is not None:
+                continue
+            if any(p in norm for p, _f in HEADER_EXACT):
+                score += 2
+            elif not _looks_like_article(v):
+                score += 1
+        return score
+
+    for r in range(max(1, best - 2), min((ws.max_row or best), best + 2) + 1):
+        if r == best:
+            continue
+        if row_label_score(r) >= 2:
+            header_rows.append(r)
+    for r in header_candidates:
+        if abs(r - best) <= 3 and row_label_score(r) >= 2:
+            header_rows.append(r)
+    header_rows = sorted(set(header_rows))
+    headers = _headers_from_rows(ws, header_rows, max_col)
+    samples = _wide_samples(ws, best + 1, max_col)
+    keyword_mapping = _keyword_mapping_from_headers(headers)
+    keyword_mapping = _refine_mapping_with_samples(keyword_mapping, {"samples": samples})
+    keyword_mapping = _infer_missing_from_samples(keyword_mapping, samples)
 
     return {
         "sheet": ws.title,
         "header_candidates": header_candidates,
         "suggested_header_row": best,
+        "header_rows": header_rows,
         "headers": headers,
         "samples": samples,
-        "keyword_mapping": _keyword_mapping_from_headers(headers),
+        "keyword_mapping": keyword_mapping,
     }
 
 
@@ -245,7 +374,7 @@ def _normalize_mapping(raw_mapping: dict) -> dict[str, int]:
 
 
 def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict[str, int]:
-    """Fix article/name swaps using sample cell values."""
+    """Fix article/name swaps and currency-mapped price/amount using sample values."""
     mapping = dict(mapping)
     samples = summary.get("samples") or []
     if not samples:
@@ -259,6 +388,13 @@ def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict
                 out.append(v)
         return out
 
+    def col_numeric_score(col: int) -> int:
+        vals = sample_vals(col)
+        return sum(1 for v in vals if _to_number(v) is not None)
+
+    def col_currency_score(col: int) -> int:
+        return sum(1 for v in sample_vals(col) if _looks_like_currency(v))
+
     art_col = mapping.get("article")
     name_col = mapping.get("name")
 
@@ -269,7 +405,6 @@ def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict
         art_as_name = sum(_looks_like_name(v) for v in art_vals)
         name_as_code = sum(_looks_like_article(v) for v in name_vals)
         name_as_name = sum(_looks_like_name(v) for v in name_vals)
-        # Swapped: article column holds phrases, name column holds codes
         if art_as_name > art_as_code and name_as_code > name_as_name:
             mapping["article"], mapping["name"] = name_col, art_col
 
@@ -285,16 +420,143 @@ def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict
             mapping["article"] = name_col
             del mapping["name"]
 
+    # Price/amount headers often sit on the currency sub-column (RMB); shift to numeric neighbor.
+    used = set(mapping.values())
+    for field in ("price", "amount"):
+        col = mapping.get(field)
+        if not col:
+            continue
+        if col_currency_score(col) > col_numeric_score(col):
+            for cand in (col + 1, col + 2, col - 1):
+                if cand < 1 or cand in used:
+                    continue
+                if col_numeric_score(cand) >= 2 and col_currency_score(cand) == 0:
+                    mapping[field] = cand
+                    used.discard(col)
+                    used.add(cand)
+                    break
+
+    # Drop unit/currency mistaken as qty etc.
+    for field in ("qty", "price", "amount", "net_weight", "gross_weight", "cll"):
+        col = mapping.get(field)
+        if not col:
+            continue
+        vals = sample_vals(col)
+        if vals and all(_looks_like_currency(v) or _looks_like_unit(v) for v in vals):
+            del mapping[field]
+
     return mapping
 
 
+def _infer_missing_from_samples(mapping: dict[str, int], samples: list[dict]) -> dict[str, int]:
+    """Infer article/name/price/amount/cll from value shapes when headers were incomplete."""
+    if not samples:
+        return mapping
+    mapping = dict(mapping)
+    used = set(mapping.values())
+
+    # Collect columns that appear in samples
+    cols = sorted({int(c) for s in samples for c in (s.get("cells") or {})})
+
+    def vals(col: int) -> list[str]:
+        return [s["cells"][str(col)] for s in samples if str(col) in (s.get("cells") or {})]
+
+    def score_article(col: int) -> int:
+        return sum(_looks_like_article(v) for v in vals(col))
+
+    def score_name(col: int) -> int:
+        return sum(_looks_like_name(v) for v in vals(col))
+
+    def score_num(col: int) -> int:
+        return sum(1 for v in vals(col) if _to_number(v) is not None)
+
+    if "article" not in mapping:
+        ranked = sorted(cols, key=score_article, reverse=True)
+        for col in ranked:
+            if col in used:
+                continue
+            if score_article(col) >= 2:
+                mapping["article"] = col
+                used.add(col)
+                break
+
+    if "name" not in mapping:
+        art = mapping.get("article")
+        # Prefer column immediately right of article
+        candidates = []
+        if art:
+            candidates.append(art + 1)
+        candidates.extend(cols)
+        for col in candidates:
+            if col in used or col < 1:
+                continue
+            if score_name(col) >= 2:
+                mapping["name"] = col
+                used.add(col)
+                break
+
+    # Numeric fields still missing — only fill price/amount near currency columns
+    for field in ("qty", "net_weight", "gross_weight", "cll"):
+        if field in mapping:
+            continue
+        best_col = None
+        best_score = 0
+        for col in cols:
+            if col in used:
+                continue
+            if score_article(col) or score_name(col):
+                continue
+            vs = vals(col)
+            if not vs:
+                continue
+            if any(_looks_like_name(v) or _looks_like_article(v) for v in vs):
+                continue
+            if vs and all(_looks_like_currency(v) or _looks_like_unit(v) for v in vs):
+                continue
+            sc = score_num(col)
+            if sc > best_score:
+                best_score = sc
+                best_col = col
+        if best_col is not None and best_score >= 2:
+            mapping[field] = best_col
+            used.add(best_col)
+
+    for field in ("price", "amount"):
+        if field in mapping:
+            continue
+        for col in cols:
+            if col in used:
+                continue
+            # Prefer numeric column whose left neighbor is currency
+            left = vals(col - 1) if col > 1 else []
+            if score_num(col) >= 2 and any(_looks_like_currency(v) for v in left):
+                mapping[field] = col
+                used.add(col)
+                break
+
+    return mapping
+
+
+def _guess_data_start_row(ws: Worksheet, header_row: int, mapping: dict[str, int]) -> int:
+    art_col = mapping.get("article")
+    name_col = mapping.get("name")
+    max_row = min((ws.max_row or header_row) + 1, header_row + 25)
+    for r in range(header_row + 1, max_row):
+        art = ws.cell(r, art_col).value if art_col else None
+        name = ws.cell(r, name_col).value if name_col else None
+        if art_col and _looks_like_article(art):
+            return r
+        if name_col and _looks_like_name(name) and not _looks_like_article(art):
+            # category lines often have name-like text without article
+            continue
+    return header_row + 1
+
+
 def _merge_mappings(keyword: dict[str, int], ai: dict[str, int], summary: dict) -> dict[str, int]:
-    """Keyword mapping wins for article/name/qty/…; AI fills gaps."""
+    """Keyword mapping wins for article/name/qty/…; AI fills gaps; then sample refine."""
     merged = dict(ai)
-    # Prefer deterministic headers for critical identity fields
-    for key in ("article", "name", "qty", "price", "amount", "net_weight", "gross_weight", "no", "tariff_code"):
+    for key in ("article", "name", "qty", "price", "amount", "net_weight", "gross_weight", "cll", "no", "tariff_code"):
         if key in keyword:
-            # free AI col if conflict
             ai_col = merged.get(key)
             kw_col = keyword[key]
             if ai_col and ai_col != kw_col:
@@ -304,11 +566,9 @@ def _merge_mappings(keyword: dict[str, int], ai: dict[str, int], summary: dict) 
             merged[key] = kw_col
     for key, col in keyword.items():
         merged.setdefault(key, col)
-    # ensure unique columns
     final: dict[str, int] = {}
     used: set[int] = set()
-    # critical fields first
-    for key in ("article", "name", "qty", "price", "amount", "net_weight", "gross_weight", "no", "tariff_code"):
+    for key in ("article", "name", "qty", "price", "amount", "net_weight", "gross_weight", "cll", "no", "tariff_code"):
         col = merged.get(key)
         if col and col not in used:
             final[key] = col
@@ -317,15 +577,31 @@ def _merge_mappings(keyword: dict[str, int], ai: dict[str, int], summary: dict) 
         if key not in final and col not in used:
             final[key] = col
             used.add(col)
-    return _refine_mapping_with_samples(final, summary)
+    final = _refine_mapping_with_samples(final, summary)
+    final = _infer_missing_from_samples(final, summary.get("samples") or [])
+    return final
 
 
 def _sheet_looks_useful(summary: dict) -> bool:
-    if len(summary["headers"]) < 2:
-        return False
+    if len(summary["headers"]) < 2 and not (summary.get("keyword_mapping") or {}).get("article"):
+        # Still useful if wide samples have article-like codes
+        samples = summary.get("samples") or []
+        art_hits = 0
+        for s in samples:
+            for v in (s.get("cells") or {}).values():
+                if _looks_like_article(v):
+                    art_hits += 1
+        if art_hits < 2:
+            return False
     texts = " ".join(h["text"] for h in summary["headers"]).lower()
-    markers = ("артикул", "наименование", "кол-во", "цена", "нетто", "брутто", "гросс", "итого", "article", "qty", "price")
-    return any(m in texts for m in markers)
+    markers = (
+        "артикул", "наименование", "описание", "кол-во", "цена", "нетто", "брутто",
+        "гросс", "итого", "article", "qty", "price", "gross", "net",
+    )
+    if any(m in texts for m in markers):
+        return True
+    km = summary.get("keyword_mapping") or {}
+    return "article" in km or "qty" in km or "net_weight" in km
 
 
 def map_all_sheets(summaries: list[dict]) -> list[dict]:
@@ -347,6 +623,7 @@ def map_all_sheets(summaries: list[dict]) -> list[dict]:
                 {
                     "sheet": s["sheet"],
                     "suggested_header_row": s["suggested_header_row"],
+                    "header_rows": s.get("header_rows") or [s["suggested_header_row"]],
                     "headers": s["headers"],
                     "sample_cells": s["samples"],
                     "hint_keyword_mapping": s.get("keyword_mapping") or {},
@@ -371,21 +648,28 @@ def map_all_sheets(summaries: list[dict]) -> list[dict]:
         item = ai_by_sheet.get(summary["sheet"], {})
         ai_map = _normalize_mapping(item.get("mapping") or {})
         mapping = _merge_mappings(summary.get("keyword_mapping") or {}, ai_map, summary)
+        header_row = int(item.get("header_row") or summary["suggested_header_row"])
+        data_start = int(item.get("data_start_row") or 0)
+        if data_start <= header_row:
+            data_start = 0
         plans.append({
             "sheet": summary["sheet"],
-            "header_row": int(item.get("header_row") or summary["suggested_header_row"]),
-            "data_start_row": int(
-                item.get("data_start_row")
-                or (summary["suggested_header_row"] + 1)
-            ),
+            "header_row": header_row,
+            "data_start_row": data_start,  # resolved later with worksheet
             "mapping": mapping,
             "source": "keyword+ai" if ai_map else "keyword",
+            "_summary": summary,
         })
     return plans
 
 
 def _sheet_kind(name: str) -> str:
     norm = engine.normalize(name)
+    compact = re.sub(r"[^a-zа-яё0-9]+", "", norm)
+    if compact in {"pl", "packing", "packinglist", "пакинг", "упаковка", "упаковочныйлист"}:
+        return "packing"
+    if compact in {"inv", "invoice", "инвойс", "инв"}:
+        return "invoice"
     if any(k in norm for k in ("pack", "пак", "пакинг", "pl(", "pl ")):
         return "packing"
     if any(k in norm for k in ("invoice", "инвойс", "инв", "in (", "in(")):
@@ -396,6 +680,8 @@ def _sheet_kind(name: str) -> str:
 def _is_skip_row(rec: dict) -> bool:
     art = _cell_str(rec.get("article")).lower()
     name = _cell_str(rec.get("name")).lower()
+    if art in HEADER_LIKE_ARTICLES or name in HEADER_LIKE_ARTICLES:
+        return True
     if art in {"sum", "total"} or name in {"sum", "total"}:
         return True
     if art.startswith("the ") or "seller" in art:
@@ -404,8 +690,17 @@ def _is_skip_row(rec: dict) -> bool:
         return True
     if "вес паллет" in art or "вес паллет" in name:
         return True
+    if art.startswith("shipping") or art.startswith("packing") or art.startswith("order no"):
+        return True
+    if "shipping marks" in art or "order no" in art:
+        return True
+    if "контейнер" in art or art.startswith("container"):
+        return True
     blob = " ".join(_cell_str(v).lower() for v in rec.values())
     if any(m in blob for m in SKIP_ROW_MARKERS):
+        # Keep real product rows that merely mention a word inside description
+        if _looks_like_article(rec.get("article")) and (_to_number(rec.get("qty")) is not None):
+            return False
         return True
     if not art and name and not re.search(r"[A-Za-zА-Яа-яЁё0-9]", name):
         return True
@@ -447,7 +742,10 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
         # Without article column we cannot reliably merge shipment lines.
         return {}
 
-    start = plan["data_start_row"]
+    header_row = int(plan.get("header_row") or 1)
+    start = int(plan.get("data_start_row") or 0)
+    if start <= header_row:
+        start = _guess_data_start_row(ws, header_row, mapping)
     max_row = ws.max_row or start
     no_col = mapping.get("no")
     items: dict[int, dict] = {}
@@ -462,7 +760,12 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
                 continue
             val = ws.cell(r, col).value
             if val not in (None, ""):
-                rec[field] = val
+                # Prefer numeric coercion for numeric fields
+                if field in SUM_FIELDS or field in {"price", "qty"}:
+                    num = _to_number(val)
+                    rec[field] = num if num is not None else val
+                else:
+                    rec[field] = val
                 non_empty = True
 
         item_no = None
@@ -489,6 +792,11 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
             continue
         if art in (None, "") and _cell_str(name).isdigit():
             continue
+        # Require a real article code when the column is mapped
+        if art not in (None, "") and not _looks_like_article(art):
+            # Allow if name exists and art looks like a code with spaces stripped oddly
+            if not _looks_like_name(name):
+                continue
 
         if item_no is None:
             seq += 1
@@ -565,7 +873,9 @@ def _combine_invoice_and_packing(invoice: dict[int, dict], packing: dict[int, di
             target = by_art[art]
             for f in weight_fields:
                 if rec.get(f) not in (None, ""):
-                    # packing already summed across containers
+                    target[f] = rec[f]
+            for f in engine.CERT_FIELDS:
+                if target.get(f) in (None, "") and rec.get(f) not in (None, ""):
                     target[f] = rec[f]
             if target.get("name") in (None, "") and rec.get("name") not in (None, ""):
                 target["name"] = rec["name"]
@@ -587,14 +897,27 @@ def extract_items_from_workbook_ai(content: bytes, filename: str | None = None) 
             if not _sheet_looks_useful(s):
                 continue
             mapping = _refine_mapping_with_samples(dict(s.get("keyword_mapping") or {}), s)
+            mapping = _infer_missing_from_samples(mapping, s.get("samples") or [])
             plans.append({
                 "sheet": s["sheet"],
                 "header_row": s["suggested_header_row"],
-                "data_start_row": s["suggested_header_row"] + 1,
+                "data_start_row": 0,
                 "mapping": mapping,
                 "error": str(e),
                 "source": "keyword_fallback",
             })
+
+    # Resolve data_start_row against actual sheets; strip internal keys from report
+    resolved_plans: list[dict] = []
+    for plan in plans:
+        p = {k: v for k, v in plan.items() if not k.startswith("_")}
+        if p["sheet"] in wb.sheetnames:
+            if not p.get("data_start_row"):
+                p["data_start_row"] = _guess_data_start_row(
+                    wb[p["sheet"]], int(p.get("header_row") or 1), p.get("mapping") or {}
+                )
+        resolved_plans.append(p)
+    plans = resolved_plans
 
     invoice_list: list[dict[int, dict]] = []
     packing_list: list[dict[int, dict]] = []
@@ -607,6 +930,13 @@ def extract_items_from_workbook_ai(content: bytes, filename: str | None = None) 
             continue
         items = extract_items_from_sheet(wb[plan["sheet"]], plan)
         kind = _sheet_kind(plan["sheet"])
+        # Content fallback: sheet with weights but no prices → packing
+        if kind == "other":
+            m = plan["mapping"]
+            if ("net_weight" in m or "gross_weight" in m) and "price" not in m and "amount" not in m:
+                kind = "packing"
+            elif "price" in m or "amount" in m:
+                kind = "invoice"
         if kind == "packing":
             packing_list.append(items)
         elif kind == "invoice":
@@ -618,7 +948,12 @@ def extract_items_from_workbook_ai(content: bytes, filename: str | None = None) 
     packing = _merge_by_article_or_no(packing_list, sum_numeric=True)
     other = _merge_by_article_or_no(other_list, sum_numeric=True)
 
-    merged = _combine_invoice_and_packing(invoice, packing)
+    if invoice or packing:
+        merged = _combine_invoice_and_packing(invoice, packing)
+    else:
+        merged = other
+        other = {}
+
     if other:
         # merge remaining sheets without double-counting invoice qty
         extra = _merge_by_article_or_no([merged, other], sum_numeric=False)
