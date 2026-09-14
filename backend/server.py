@@ -777,8 +777,10 @@ def _fetch_all_pages(max_pages: int = 82) -> list[dict]:
 def health():
     return {
         "ok": True,
+        "version": "2026-09-14.2",
         "data_dir": DATA_DIR,
         "template_exists": os.path.exists(TEMPLATE_PATH),
+        "persistent_data": os.path.normpath(DATA_DIR) != os.path.normpath(BUNDLE_DATA_DIR),
     }
 
 
