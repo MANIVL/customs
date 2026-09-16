@@ -11,6 +11,7 @@ import engine
 import excel_io
 import yandex_gpt
 import countries
+import units
 
 CANONICAL_FIELDS = [
     "no", "tariff_code", "name", "article", "marks", "manufacturer",
@@ -79,6 +80,10 @@ HEADER_EXACT = [
     ("итого", "amount"),
     ("сумма", "amount"),
     ("amount", "amount"),
+    ("единица измерения", "unit"),
+    ("unit of measure", "unit"),
+    ("unit /", "unit"),
+    ("uom", "unit"),
     ("страна происхождения товара", "country"),
     ("страна происхождения", "country"),
     ("country of origin", "country"),
@@ -231,13 +236,8 @@ def _headers_from_rows(ws: Worksheet, rows: list[int], max_col: int) -> list[dic
 
 
 def _header_phrase_match(phrase: str, norm: str) -> bool:
-    """Substring match for long phrases; whole-token match for short ones."""
-    if not phrase or not norm:
-        return False
-    if len(phrase) <= 3:
-        tokens = re.split(r"[^\wа-яё]+", norm, flags=re.IGNORECASE)
-        return phrase in tokens
-    return phrase in norm
+    """Word-boundary match for single tokens; substring for multi-word labels."""
+    return engine.header_keyword_matches(phrase, norm)
 
 
 def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
@@ -789,6 +789,13 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
             if found:
                 rec["country"] = found
                 non_empty = True
+        if rec.get("unit") in (None, ""):
+            found_u = units.find_unit_in_row(
+                ws, r, skip_cols=mapping.values()
+            )
+            if found_u:
+                rec["unit"] = found_u
+                non_empty = True
 
         item_no = None
         if no_col:
@@ -901,7 +908,7 @@ def _combine_invoice_and_packing(invoice: dict[int, dict], packing: dict[int, di
                     target[f] = rec[f]
             if target.get("name") in (None, "") and rec.get("name") not in (None, ""):
                 target["name"] = rec["name"]
-            for f in ("country", "manufacturer", "marks"):
+            for f in ("country", "unit", "manufacturer", "marks"):
                 if target.get(f) in (None, "") and rec.get(f) not in (None, ""):
                     target[f] = rec[f]
         else:

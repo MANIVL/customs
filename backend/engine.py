@@ -34,6 +34,7 @@ from openpyxl.styles import Font, Alignment
 import datetime
 import excel_io
 import countries
+import units
 
 
 # --------------------------------------------------------------------------
@@ -56,7 +57,10 @@ HEADER_KEYWORDS: dict[str, list[str]] = {
         "原产国", "原产地",
     ],
     "manufacturer": ["manufacturer", "производитель"],
-    "unit": ["unit /", "единица измерения"],
+    "unit": [
+        "unit /", "единица измерения", "единицы измерения", "unit of measure",
+        "uom",
+    ],
     "qty": ["q-ty", "кол-во в ед", "кол-во", "количество", "qty"],
     "price": ["price usd", "цена долл", "цена", "price"],
     "amount": ["amount, usd", "стоимость, долл", "стоимость", "итого", "сумма", "amount"],
@@ -100,6 +104,27 @@ def normalize(text: Any) -> str:
     if text is None:
         return ""
     return re.sub(r"\s+", " ", str(text)).strip().lower()
+
+
+def header_keyword_matches(keyword: str, norm: str) -> bool:
+    """Match a header keyword in normalized cell text.
+
+    Short prefixes (≤3 chars) stay substring matches («пал» → «паллет»).
+    Longer single tokens use word boundaries so «article» does not hit
+    «ARTICLES CO., LTD» in a data cell mistaken for a header.
+    """
+    if not keyword or not norm:
+        return False
+    if len(keyword) <= 3 or any(ch in keyword for ch in " /."):
+        return keyword in norm
+    return re.search(
+        r"(?<![0-9a-zа-яё])" + re.escape(keyword) + r"(?![0-9a-zа-яё])",
+        norm,
+    ) is not None
+
+
+def any_header_keyword(keywords: list[str], norm: str) -> bool:
+    return any(header_keyword_matches(kw, norm) for kw in keywords)
 
 
 def parse_date(text: str) -> datetime.datetime | None:
@@ -166,13 +191,23 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
     if no_col:
         columns["no"] = no_col
 
+    def _row_looks_like_items(r: int) -> bool:
+        """True when the row already has an item number — do not treat as a header."""
+        if not no_col:
+            return False
+        val = ws.cell(row=r, column=no_col).value
+        return isinstance(val, (int, float)) and float(val).is_integer() and val > 0
+
     def absorb_header_row(r: int) -> None:
         for c in range(1, max_col + 1):
             norm = normalize(ws.cell(row=r, column=c).value)
             if not norm:
                 continue
             for fkey, keywords in HEADER_KEYWORDS.items():
-                if not any(kw in norm for kw in keywords):
+                if not any_header_keyword(keywords, norm):
+                    continue
+                # «Price USD / unit / …» is a price header, not the unit column
+                if fkey == "unit" and any_header_keyword(HEADER_KEYWORDS["price"], norm):
                     continue
                 # Prefer article over a generic "описание товара" on the same column
                 if c in columns.values() and fkey != "article":
@@ -194,14 +229,18 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
     for probe in (header_row - 2, header_row - 1, header_row + 1, header_row + 2):
         if probe < 1 or probe > (ws.max_row or probe):
             continue
+        if _row_looks_like_items(probe):
+            continue
         absorb_header_row(probe)
     if "article" in columns and columns.get("name") == columns.get("article"):
         for probe in (header_row, header_row + 1, header_row + 2):
             if probe > (ws.max_row or probe):
                 break
+            if _row_looks_like_items(probe):
+                continue
             for c in range(1, max_col + 1):
                 norm = normalize(ws.cell(row=probe, column=c).value)
-                if any(kw in norm for kw in HEADER_KEYWORDS["name"]) and c != columns["article"]:
+                if any_header_keyword(HEADER_KEYWORDS["name"], norm) and c != columns["article"]:
                     columns["name"] = c
                     break
             if columns.get("name") != columns.get("article"):
@@ -385,7 +424,7 @@ def _find_header_without_no(ws: Worksheet, max_scan_rows: int = 60, max_scan_col
             if not norm:
                 continue
             for fkey in keys:
-                if any(kw in norm for kw in HEADER_KEYWORDS[fkey]):
+                if any_header_keyword(HEADER_KEYWORDS[fkey], norm):
                     hits += 1
                     if fkey == "article":
                         has_article = True
@@ -531,6 +570,12 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                     )
                     if found:
                         rec["country"] = found
+                if rec.get("unit") in (None, ""):
+                    found_u = units.find_unit_in_row(
+                        ws, row, skip_cols=t.columns.values()
+                    )
+                    if found_u:
+                        rec["unit"] = found_u
                 art = rec.get("article")
                 if art in (None, ""):
                     continue
@@ -581,7 +626,7 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
             for f in weight_fields:
                 if rec.get(f) not in (None, ""):
                     invoice[key][f] = rec[f]
-            merge_missing(invoice[key], rec, CERT_FIELDS + ["name", "country", "manufacturer", "marks"])
+            merge_missing(invoice[key], rec, CERT_FIELDS + ["name", "country", "unit", "manufacturer", "marks"])
         else:
             invoice[key] = dict(rec)
             order.append(key)
@@ -724,9 +769,12 @@ def find_template_table(ws: Worksheet, max_scan_rows: int = 20):
         for fkey, keywords in TEMPLATE_FIELD_KEYWORDS.items():
             if fkey in columns:
                 continue
-            if any(kw in norm for kw in keywords):
-                columns[fkey] = c
-                break
+            if not any_header_keyword(keywords, norm):
+                continue
+            if fkey == "unit" and any_header_keyword(TEMPLATE_FIELD_KEYWORDS["price"], norm):
+                continue
+            columns[fkey] = c
+            break
         for cfkey, (keywords, _primary_key, _secondary_key) in TEMPLATE_CERT_KEYWORDS.items():
             # exact-ish match: header text equals the keyword, ignoring a
             # trailing " 2" duplicate-suffix (мнр 2 / от 2 / до 2 / код мнр 2)
@@ -751,8 +799,8 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
     header_row, columns = find_template_table(ws)
     data_start = header_row + 1
 
-    fixed_unit = settings.get("unit", "шт")
     countries.apply_country_codes(items, fallback=settings.get("country"))
+    units.apply_units(items, fallback=settings.get("unit"))
 
     for i, item_no in enumerate(sorted(items.keys())):
         rec = items[item_no]
@@ -776,7 +824,7 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
         put("marks", rec.get("marks"))
         put("manufacturer", rec.get("manufacturer"))
         put("country", rec.get("country"))
-        put("unit", fixed_unit)
+        put("unit", rec.get("unit"))
         put("qty", rec.get("qty"))
         put("price", rec.get("price"))
         put("amount", rec.get("amount"))
