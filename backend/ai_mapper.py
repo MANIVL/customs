@@ -10,6 +10,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 import engine
 import excel_io
 import yandex_gpt
+import countries
 
 CANONICAL_FIELDS = [
     "no", "tariff_code", "name", "article", "marks", "manufacturer",
@@ -78,6 +79,19 @@ HEADER_EXACT = [
     ("итого", "amount"),
     ("сумма", "amount"),
     ("amount", "amount"),
+    ("страна происхождения товара", "country"),
+    ("страна происхождения", "country"),
+    ("country of origin", "country"),
+    ("страна-производитель", "country"),
+    ("страна производитель", "country"),
+    ("origin country", "country"),
+    ("place of origin", "country"),
+    ("made in", "country"),
+    ("происхождение", "country"),
+    ("страна", "country"),
+    ("country", "country"),
+    ("原产国", "country"),
+    ("原产地", "country"),
     ("производитель", "manufacturer"),
     ("manufacturer", "manufacturer"),
     ("торговая марка", "marks"),
@@ -233,7 +247,7 @@ def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
     priority = {
         "article": 100, "name": 90, "qty": 80, "price": 70, "amount": 70,
         "net_weight": 75, "gross_weight": 75, "cll": 65, "no": 95, "tariff_code": 85,
-        "marks": 40, "manufacturer": 40, "country": 40, "unit": 30,
+        "marks": 40, "country": 55, "manufacturer": 40, "unit": 30,
     }
 
     def assign(field: str, col: int) -> None:
@@ -768,6 +782,14 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
                     rec[field] = val
                 non_empty = True
 
+        if rec.get("country") in (None, ""):
+            found = countries.find_country_in_row(
+                ws, r, skip_cols=mapping.values()
+            )
+            if found:
+                rec["country"] = found
+                non_empty = True
+
         item_no = None
         if no_col:
             raw_no = ws.cell(r, no_col).value
@@ -879,6 +901,9 @@ def _combine_invoice_and_packing(invoice: dict[int, dict], packing: dict[int, di
                     target[f] = rec[f]
             if target.get("name") in (None, "") and rec.get("name") not in (None, ""):
                 target["name"] = rec["name"]
+            for f in ("country", "manufacturer", "marks"):
+                if target.get(f) in (None, "") and rec.get(f) not in (None, ""):
+                    target[f] = rec[f]
         else:
             by_art[art] = dict(rec)
             order.append(art)
@@ -958,6 +983,12 @@ def extract_items_from_workbook_ai(content: bytes, filename: str | None = None) 
         # merge remaining sheets without double-counting invoice qty
         extra = _merge_by_article_or_no([merged, other], sum_numeric=False)
         merged = extra if extra else merged
+
+    doc_country = countries.find_document_country(wb)
+    if doc_country:
+        for rec in merged.values():
+            if rec.get("country") in (None, ""):
+                rec["country"] = doc_country
 
     return merged, plans
 

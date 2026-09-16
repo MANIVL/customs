@@ -16,6 +16,8 @@ Core ideas:
 - Certificate/declaration text ("... от DD.MM.YYYY действует до DD.MM.YYYY")
   is located anywhere in an item's row (any sheet, any column) and parsed
   into number / date-from / date-to / code fields.
+- Country of origin is read from the files (column, row, or header area) and
+  mapped to ISO 3166-1 alpha-2 via the OКСМ classifier (Китай → CN).
 """
 
 from __future__ import annotations
@@ -31,6 +33,7 @@ from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.styles import Font, Alignment
 import datetime
 import excel_io
+import countries
 
 
 # --------------------------------------------------------------------------
@@ -46,8 +49,13 @@ HEADER_KEYWORDS: dict[str, list[str]] = {
     "name": ["name of product", "наименование товара", "наименование", "описание", "description"],
     "article": ["article", "артикул", "sku"],
     "marks": ["marks /", "торговая марка", "бренд", "brand"],
+    "country": [
+        "country of origin", "страна происхождения товара", "страна происхождения",
+        "страна-производитель", "страна производитель", "origin country",
+        "place of origin", "made in", "происхождение", "страна", "country",
+        "原产国", "原产地",
+    ],
     "manufacturer": ["manufacturer", "производитель"],
-    "country": ["country of origin", "страна происхождения"],
     "unit": ["unit /", "единица измерения"],
     "qty": ["q-ty", "кол-во в ед", "кол-во", "количество", "qty"],
     "price": ["price usd", "цена долл", "цена", "price"],
@@ -517,6 +525,12 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                     val = ws.cell(row=row, column=col).value
                     if val not in (None, ""):
                         rec[field_key] = val
+                if rec.get("country") in (None, ""):
+                    found = countries.find_country_in_row(
+                        ws, row, skip_cols=t.columns.values()
+                    )
+                    if found:
+                        rec["country"] = found
                 art = rec.get("article")
                 if art in (None, ""):
                     continue
@@ -567,7 +581,7 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
             for f in weight_fields:
                 if rec.get(f) not in (None, ""):
                     invoice[key][f] = rec[f]
-            merge_missing(invoice[key], rec, CERT_FIELDS + ["name"])
+            merge_missing(invoice[key], rec, CERT_FIELDS + ["name", "country", "manufacturer", "marks"])
         else:
             invoice[key] = dict(rec)
             order.append(key)
@@ -580,7 +594,13 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
             invoice[key] = dict(rec)
             order.append(key)
 
-    return {i + 1: invoice[k] for i, k in enumerate(order)}
+    result = {i + 1: invoice[k] for i, k in enumerate(order)}
+    doc_country = countries.find_document_country(wb)
+    if doc_country:
+        for rec in result.values():
+            if rec.get("country") in (None, ""):
+                rec["country"] = doc_country
+    return result
 
 
 def merge_workbooks(items_list: list[dict[int, dict]]) -> dict[int, dict]:
@@ -731,8 +751,8 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
     header_row, columns = find_template_table(ws)
     data_start = header_row + 1
 
-    fixed_country = settings.get("country", "CN")
     fixed_unit = settings.get("unit", "шт")
+    countries.apply_country_codes(items, fallback=settings.get("country"))
 
     for i, item_no in enumerate(sorted(items.keys())):
         rec = items[item_no]
@@ -755,7 +775,7 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
         put("article", rec.get("article"))
         put("marks", rec.get("marks"))
         put("manufacturer", rec.get("manufacturer"))
-        put("country", fixed_country)
+        put("country", rec.get("country"))
         put("unit", fixed_unit)
         put("qty", rec.get("qty"))
         put("price", rec.get("price"))
