@@ -990,7 +990,12 @@ async def ai_analyze(
     if not yandex_gpt.is_configured():
         return JSONResponse(
             {
-                "error": "YandexGPT не настроен. Задайте YANDEX_API_KEY и YANDEX_FOLDER_ID в файле .env",
+                "error": (
+                    "YandexGPT не настроен. "
+                    "На Render: Dashboard → tamozhenformat → Environment → "
+                    "добавьте YANDEX_API_KEY и YANDEX_FOLDER_ID (из локального .env), затем Redeploy. "
+                    "Локально: задайте те же переменные в файле .env рядом с main.py."
+                )
             },
             status_code=503,
         )
