@@ -44,6 +44,10 @@ FIELD_HINTS = {
 HEADER_EXACT = [
     ("артикул", "article"),
     ("article", "article"),
+    ("item no", "article"),
+    ("item no.", "article"),
+    ("item#", "article"),
+    ("item number", "article"),
     ("sku", "article"),
     ("model no", "article"),
     ("model", "article"),
@@ -84,6 +88,7 @@ HEADER_EXACT = [
     ("unit of measure", "unit"),
     ("unit /", "unit"),
     ("uom", "unit"),
+    ("unit", "unit"),
     ("страна происхождения товара", "country"),
     ("страна происхождения", "country"),
     ("country of origin", "country"),
@@ -112,7 +117,8 @@ CURRENCY_RE = re.compile(
     re.IGNORECASE,
 )
 UNIT_TOKENS = frozenset({
-    "шт", "шт.", "pcs", "pc", "kg", "кг", "кg", "кор", "кор.", "ctn", "carton", "cartons",
+    "шт", "шт.", "pcs", "pc", "pcs.", "set", "sets", "kg", "кг", "кg",
+    "кор", "кор.", "ctn", "carton", "cartons",
 })
 HEADER_LIKE_ARTICLES = frozenset({
     "артикул", "article", "sku", "описание", "description", "наименование",
@@ -142,7 +148,11 @@ SYSTEM_PROMPT = """Ты помощник по таможенным Excel-док�
    Если рядом с валютой есть число (RMB | 345.6) — price/amount = столбец с ЧИСЛОМ.
 6) На packing list мапь net_weight / gross_weight / cll (места/кор) и обязательно article+name, если они есть в примерах.
 7) data_start_row — первая строка с реальным артикулом (не «артикул», не категория, не контейнер).
-8) Ответ — ТОЛЬКО JSON-массив (без markdown):
+8) PO/NO, Order No, order_32_26 — это номер заказа, НЕ article. Article = Item NO / SKU (E36124-CP).
+9) Кол-во (qty) обычно целые 3, 60, 102; Цена (price) — с копейками 618.42; amount ≈ qty × price. Не путай эти столбцы.
+10) «Price Terms:», «Payment Terms:», «Country of Origin:», «Currency:» — поля шапки документа, НЕ заголовки таблицы.
+11) «Общий гросс» / total gross — не net_weight и не price; строковый гросс/нетто бери из «Гросс вес» / «Нетто вес».
+12) Ответ — ТОЛЬКО JSON-массив (без markdown):
 [{"sheet":"имя","header_row":N,"data_start_row":M,"mapping":{"article":2,"name":3,"qty":4,"price":9,"amount":12}}]
 col в mapping — 1-based номер столбца Excel.
 """
@@ -163,6 +173,38 @@ def _looks_like_article(val: Any) -> bool:
     if s.lower() in HEADER_LIKE_ARTICLES:
         return False
     return bool(ARTICLE_RE.match(s)) and not s.replace(".", "").isdigit()
+
+
+def _looks_like_order_ref(val: Any) -> bool:
+    """PO / order number, not a product SKU."""
+    s = _cell_str(val).lower()
+    if not s:
+        return False
+    return bool(re.match(r"^(order[_\-\s]|po[_\-\s/#]|po/no)", s))
+
+
+def _looks_like_sku(val: Any) -> bool:
+    """Product code like E36124-CP, not order_32_26."""
+    if _looks_like_order_ref(val) or not _looks_like_article(val):
+        return False
+    s = _cell_str(val)
+    return bool(re.search(r"[A-Za-z]", s) and re.search(r"\d", s))
+
+
+def _is_metadata_label(text: str) -> bool:
+    """Document header fields like «Price Terms:», not table column titles."""
+    s = _cell_str(text)
+    if not s:
+        return False
+    if s.endswith(":") or s.endswith("："):
+        return True
+    n = engine.normalize(s)
+    prefixes = (
+        "payment terms", "price terms", "invoice no", "b/l", "messrs",
+        "ship from", "ship via", "delivery to", "currency", "contact",
+        "container no", "seal no", "to port",
+    )
+    return n.startswith(prefixes)
 
 
 def _looks_like_name(val: Any) -> bool:
@@ -199,11 +241,15 @@ def _find_candidate_header_rows(ws: Worksheet, max_scan: int = 50) -> list[int]:
             if not isinstance(v, str) or not v.strip():
                 continue
             text = v.strip()
+            if _is_metadata_label(text):
+                continue
             texts.append(text)
             norm = engine.normalize(text)
-            if any(any(kw in norm for kw in bag) for bag in keyword_bags):
+            if any(_header_phrase_match(p, norm) for p, _f in HEADER_EXACT):
                 hits += 1
-            if "артикул" in norm or norm in {"article", "sku"}:
+            elif any(any(kw in norm for kw in bag) for bag in keyword_bags):
+                hits += 1
+            if "артикул" in norm or "item no" in norm or norm in {"article", "sku"}:
                 has_article = True
         if len(texts) < 2 and not has_article:
             continue
@@ -220,17 +266,18 @@ def _headers_from_rows(ws: Worksheet, rows: list[int], max_col: int) -> list[dic
     for r in rows:
         for c in range(1, max_col + 1):
             text = _cell_str(ws.cell(r, c).value)
-            if not text:
+            if not text or _is_metadata_label(text):
                 continue
-            # Prefer more specific later labels (артикул over Описание товара)
             prev = by_col.get(c, "")
             prev_n = engine.normalize(prev)
             cur_n = engine.normalize(text)
             if not prev:
                 by_col[c] = text
-            elif ("артикул" in cur_n or cur_n == "article") and "артикул" not in prev_n:
+            elif ("артикул" in cur_n or "item no" in cur_n or cur_n == "article") and "артикул" not in prev_n:
                 by_col[c] = text
             elif ("описание" in cur_n or "наименование" in cur_n) and len(text) <= len(prev):
+                by_col[c] = text
+            elif _is_metadata_label(prev) and not _is_metadata_label(text):
                 by_col[c] = text
     return [{"col": c, "text": by_col[c]} for c in sorted(by_col)]
 
@@ -264,6 +311,8 @@ def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
         col_field[col] = field
 
     for h in headers:
+        if _is_metadata_label(h["text"]):
+            continue
         norm = engine.normalize(h["text"])
         if not norm:
             continue
@@ -273,9 +322,18 @@ def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
             if not any(_header_phrase_match(p, norm) for p, _f in HEADER_EXACT if len(p) <= 12):
                 continue
         for phrase, field in HEADER_EXACT:
-            if _header_phrase_match(phrase, norm):
-                assign(field, h["col"])
-                break
+            if not _header_phrase_match(phrase, norm):
+                continue
+            # PO/Order No is not the product SKU (Item NO / артикул is).
+            if field == "article" and any(x in norm for x in ("po/no", "po no", "order no", "номер заказа")) and "item" not in norm:
+                continue
+            # «Общий гросс» / total gross is a totals column, not line weight.
+            if field in ("gross_weight", "net_weight", "amount") and (
+                "общ" in norm or "total" in norm or "grand" in norm
+            ):
+                continue
+            assign(field, h["col"])
+            break
     return field_cols
 
 
@@ -302,28 +360,25 @@ def summarize_sheet(ws: Worksheet) -> dict:
     # Include nearby label rows only (skip numeric data rows mistaken as candidates)
     header_rows = [best]
 
-    def row_label_score(r: int) -> int:
+    def row_table_label_score(r: int) -> int:
         score = 0
         for c in range(1, max_col + 1):
             v = ws.cell(r, c).value
             if not isinstance(v, str):
                 continue
+            if _is_metadata_label(v):
+                continue
             norm = engine.normalize(v)
             if not norm or _to_number(v) is not None:
                 continue
-            if any(p in norm for p, _f in HEADER_EXACT):
+            if any(_header_phrase_match(p, norm) for p, _f in HEADER_EXACT):
                 score += 2
-            elif not _looks_like_article(v):
-                score += 1
         return score
 
-    for r in range(max(1, best - 2), min((ws.max_row or best), best + 2) + 1):
+    for r in range(max(1, best - 1), min((ws.max_row or best), best + 1) + 1):
         if r == best:
             continue
-        if row_label_score(r) >= 2:
-            header_rows.append(r)
-    for r in header_candidates:
-        if abs(r - best) <= 3 and row_label_score(r) >= 2:
+        if row_table_label_score(r) >= 2:
             header_rows.append(r)
     header_rows = sorted(set(header_rows))
     headers = _headers_from_rows(ws, header_rows, max_col)
@@ -434,6 +489,63 @@ def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict
             mapping["article"] = name_col
             del mapping["name"]
 
+    # Prefer SKU column (E36124-CP) over PO/order (order_32_26)
+    art_col = mapping.get("article")
+    if art_col:
+        used_now = set(mapping.values())
+        art_vals = sample_vals(art_col)
+        if art_vals and sum(_looks_like_order_ref(v) for v in art_vals) >= 2:
+            best_c, best_s = None, 0
+            cols = sorted({int(c) for s in samples for c in (s.get("cells") or {})})
+            for col in cols:
+                if col == art_col:
+                    continue
+                if col in used_now and col != mapping.get("name"):
+                    continue
+                sku_hits = sum(_looks_like_sku(v) for v in sample_vals(col))
+                if sku_hits > best_s:
+                    best_s, best_c = sku_hits, col
+            if best_c and best_s >= 2:
+                if mapping.get("name") == best_c:
+                    del mapping["name"]
+                mapping["article"] = best_c
+
+    # Qty is usually integers; unit price often has decimals. Swap if clearly reversed.
+    qty_col, price_col = mapping.get("qty"), mapping.get("price")
+    if qty_col and price_col:
+        def _nums(col: int) -> list[float]:
+            out = []
+            for v in sample_vals(col):
+                n = _to_number(v)
+                if n is not None:
+                    out.append(n)
+            return out
+
+        qn, pn = _nums(qty_col), _nums(price_col)
+        if qn and pn:
+            q_int = sum(1 for x in qn if float(x).is_integer())
+            p_int = sum(1 for x in pn if float(x).is_integer())
+            q_dec = len(qn) - q_int
+            if q_dec >= 2 and p_int >= 2 and q_int <= p_int:
+                mapping["qty"], mapping["price"] = price_col, qty_col
+
+    # «Общий гросс» is a total, not the line gross weight.
+    headers_by_col = {
+        h["col"]: engine.normalize(h.get("text") or "")
+        for h in (summary.get("headers") or [])
+    }
+    gw = mapping.get("gross_weight")
+    if gw:
+        gw_txt = headers_by_col.get(gw, "")
+        if "общ" in gw_txt or "total" in gw_txt:
+            used_now = set(mapping.values())
+            for col, text in headers_by_col.items():
+                if col == gw or col in used_now:
+                    continue
+                if any(k in text for k in ("гросс", "брутто", "gross")) and "общ" not in text and "total" not in text:
+                    mapping["gross_weight"] = col
+                    break
+
     # Price/amount headers often sit on the currency sub-column (RMB); shift to numeric neighbor.
     used = set(mapping.values())
     for field in ("price", "amount"):
@@ -476,7 +588,11 @@ def _infer_missing_from_samples(mapping: dict[str, int], samples: list[dict]) ->
         return [s["cells"][str(col)] for s in samples if str(col) in (s.get("cells") or {})]
 
     def score_article(col: int) -> int:
-        return sum(_looks_like_article(v) for v in vals(col))
+        vs = vals(col)
+        sku = sum(_looks_like_sku(v) for v in vs)
+        art = sum(_looks_like_article(v) for v in vs)
+        order = sum(_looks_like_order_ref(v) for v in vs)
+        return sku * 5 + art - order * 5
 
     def score_name(col: int) -> int:
         return sum(_looks_like_name(v) for v in vals(col))
@@ -624,11 +740,26 @@ def map_all_sheets(summaries: list[dict]) -> list[dict]:
         return []
 
     # If keyword mapping already covers article+name+qty for all sheets, skip AI
-    strong = all(
-        {"article", "name"}.issubset(s.get("keyword_mapping") or {})
-        or {"article", "qty"}.issubset(s.get("keyword_mapping") or {})
-        for s in usable
-    )
+    def mapping_is_strong(s: dict) -> bool:
+        km = s.get("keyword_mapping") or {}
+        if not (
+            {"article", "name"}.issubset(km)
+            or {"article", "qty"}.issubset(km)
+        ):
+            return False
+        art_col = km.get("article")
+        samples = s.get("samples") or []
+        if not art_col or not samples:
+            return True
+        vs = [(row.get("cells") or {}).get(str(art_col)) for row in samples]
+        vs = [v for v in vs if v]
+        if not vs:
+            return True
+        if sum(_looks_like_order_ref(v) for v in vs) > sum(_looks_like_sku(v) for v in vs):
+            return False
+        return True
+
+    strong = all(mapping_is_strong(s) for s in usable)
 
     ai_by_sheet: dict[str, dict] = {}
     if not strong and yandex_gpt.is_configured():
@@ -680,7 +811,7 @@ def map_all_sheets(summaries: list[dict]) -> list[dict]:
 def _sheet_kind(name: str) -> str:
     norm = engine.normalize(name)
     compact = re.sub(r"[^a-zа-яё0-9]+", "", norm)
-    if compact in {"pl", "packing", "packinglist", "пакинг", "упаковка", "упаковочныйлист"}:
+    if compact in {"pl", "pk", "packing", "packinglist", "пакинг", "упаковка", "упаковочныйлист"}:
         return "packing"
     if compact in {"inv", "invoice", "инвойс", "инв"}:
         return "invoice"
@@ -729,7 +860,10 @@ def _merge_field(target: dict, key: str, value: Any) -> None:
         right = _to_number(value)
         if left is not None and right is not None:
             total = left + right
-            target[key] = int(total) if total.is_integer() else total
+            if abs(total - round(total)) < 1e-9:
+                target[key] = int(round(total))
+            else:
+                target[key] = round(total, 4)
             return
         if target.get(key) in (None, ""):
             target[key] = value
