@@ -292,9 +292,21 @@
     el.progressBar.style.display = 'none';
   }
 
-  // log: { errors?: string[], warnings?: string[], unknown?: string[] }
+  // log: { summary?: string, errors?: string[], warnings?: string[], notes?: string[], unknown?: string[] }
+  function parseProtocol(res) {
+    var b64 = res.headers.get('X-Protocol');
+    if (!b64) return null;
+    try {
+      var bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
+      return JSON.parse(new TextDecoder('utf-8').decode(bytes));
+    } catch (e) {
+      return null;
+    }
+  }
+
   function showErrorLog(log) {
     if (!el.errorLog) return;
+    log = log || {};
 
     el.errorLogList.innerHTML = '';
 
@@ -308,11 +320,19 @@
     (log.errors || []).forEach((m) => addEntry('error', m));
     (log.warnings || []).forEach((m) => addEntry('warning', m));
     (log.unknown || []).forEach((m) => addEntry('unknown', m));
+    (log.notes || []).forEach((m) => addEntry('note', m));
 
-    if ((log.unknown || []).length) {
+    const hasErrors = (log.errors || []).length > 0;
+    const hasWarnings = (log.warnings || []).length > 0 || (log.unknown || []).length > 0;
+    el.errorLog.classList.toggle('has-errors', hasErrors);
+    el.errorLog.classList.toggle('has-issues', hasWarnings && !hasErrors);
+
+    if (log.summary) {
+      el.errorLogSummary.textContent = log.summary;
+    } else if ((log.unknown || []).length) {
       el.errorLogSummary.textContent = 'Обнаружены неизвестные элементы в загружаемом файле.';
-    } else if ((log.errors || []).length || (log.warnings || []).length) {
-      el.errorLogSummary.textContent = 'Обнаружены ошибки/предупреждения, проверьте протокол.';
+    } else if (hasErrors || hasWarnings) {
+      el.errorLogSummary.textContent = 'Есть замечания, проверьте протокол.';
     } else {
       el.errorLogSummary.textContent = 'Ошибок не обнаружено, файл обработан корректно.';
     }
@@ -351,12 +371,12 @@
         throw new Error(data.error || 'Ошибка формирования файла');
       }
 
-      showErrorLog({ errors: [], warnings: [], unknown: [] });
-
+      const protocol = parseProtocol(res);
       const blob = await res.blob();
       const filename = 'result.xlsx';
       showResult(blob, filename);
       triggerDownload(blob, filename);
+      showErrorLog(protocol);
     } catch (e) {
       if (progressTimer) clearInterval(progressTimer);
       showError('Не удалось скачать файл: ' + e.message);
@@ -725,15 +745,15 @@
           if (!res.ok) {
             return res.json().then(function (d) { throw new Error(d.error || 'Ошибка ИИ-анализа'); });
           }
-          return res.blob();
+          var protocol = parseProtocol(res);
+          return res.blob().then(function (blob) {
+            return { blob: blob, protocol: protocol };
+          });
         })
-        .then(function (blob) {
-          triggerDownload(blob, 'result.xlsx');
-          showResult(blob, 'result.xlsx');
-          showErrorLog({ errors: [], warnings: [], unknown: [] });
-          if (el.errorLogSummary) {
-            el.errorLogSummary.textContent = 'Столбцы сопоставлены через YandexGPT, файл сформирован.';
-          }
+        .then(function (payload) {
+          triggerDownload(payload.blob, 'result.xlsx');
+          showResult(payload.blob, 'result.xlsx');
+          showErrorLog(payload.protocol);
         })
         .catch(function (e) {
           clearTimeout(timeoutId);

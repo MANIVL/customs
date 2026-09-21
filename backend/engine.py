@@ -869,8 +869,243 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
 
 
 # --------------------------------------------------------------------------
-# High-level entry point
+# Fill-quality protocol (shown in the UI after download)
 # --------------------------------------------------------------------------
+
+def _protocol_empty(val: Any) -> bool:
+    return val in (None, "")
+
+
+def _protocol_num(val: Any) -> float | None:
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val or "").strip().replace(" ", "").replace(",", ".")
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _protocol_arts(recs: list[dict], limit: int = 5) -> str:
+    arts = []
+    for rec in recs:
+        art = rec.get("article")
+        if art not in (None, ""):
+            arts.append(str(art).strip())
+    if not arts:
+        return ""
+    shown = arts[:limit]
+    extra = len(arts) - len(shown)
+    text = ", ".join(shown)
+    if extra > 0:
+        text += f" и ещё {extra}"
+    return text
+
+
+def _ru_positions(n: int) -> str:
+    nabs = abs(n) % 100
+    if 11 <= nabs <= 14:
+        word = "позиций"
+    else:
+        k = nabs % 10
+        word = "позиция" if k == 1 else ("позиции" if 2 <= k <= 4 else "позиций")
+    return f"{n} {word}"
+
+
+def build_fill_protocol(
+    items: dict[int, dict],
+    *,
+    settings: dict | None = None,
+    mappings: list[dict] | None = None,
+    mode: str | None = None,
+) -> dict:
+    """Short human-readable protocol: what is missing or looks misplaced."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    notes: list[str] = []
+    n = len(items)
+    if n == 0:
+        errors.append("Не найдено ни одной товарной позиции — шаблон не заполнен.")
+        return {
+            "summary": "Обработка завершилась без строк в шаблоне.",
+            "errors": errors,
+            "warnings": warnings,
+            "notes": notes,
+            "items_found": 0,
+        }
+
+    recs = [items[k] for k in sorted(items)]
+
+    no_art = [r for r in recs if _protocol_empty(r.get("article"))]
+    if no_art:
+        errors.append(f"Без артикула: {_ru_positions(len(no_art))}.")
+
+    no_name = [r for r in recs if _protocol_empty(r.get("name"))]
+    if no_name:
+        sample = _protocol_arts(no_name)
+        warnings.append(
+            "Без наименования: "
+            + _ru_positions(len(no_name))
+            + (f" ({sample})" if sample else "")
+            + "."
+        )
+
+    no_qty = [r for r in recs if _protocol_num(r.get("qty")) is None]
+    if no_qty:
+        sample = _protocol_arts(no_qty)
+        warnings.append(
+            "Не перенесено количество: "
+            + _ru_positions(len(no_qty))
+            + (f" ({sample})" if sample else "")
+            + "."
+        )
+
+    priced = [r for r in recs if _protocol_num(r.get("price")) is not None or _protocol_num(r.get("amount")) is not None]
+    weighed = [
+        r for r in recs
+        if _protocol_num(r.get("net_weight")) is not None or _protocol_num(r.get("gross_weight")) is not None
+    ]
+    only_pack = [
+        r for r in recs
+        if r not in priced
+        and (
+            _protocol_num(r.get("net_weight")) is not None
+            or _protocol_num(r.get("gross_weight")) is not None
+            or _protocol_num(r.get("cll")) is not None
+        )
+    ]
+    only_inv = [r for r in priced if r not in weighed]
+    if only_pack and priced:
+        sample = _protocol_arts(only_pack)
+        warnings.append(
+            "Есть только в упаковочном листе (веса без цены): "
+            + _ru_positions(len(only_pack))
+            + (f" — {sample}" if sample else "")
+            + ". Артикулы не совпали с инвойсом."
+        )
+    if only_inv and weighed:
+        sample = _protocol_arts(only_inv)
+        warnings.append(
+            "Позиции инвойса без веса нетто/брутто: "
+            + _ru_positions(len(only_inv))
+            + (f" — {sample}" if sample else "")
+            + "."
+        )
+
+    no_country = [r for r in recs if _protocol_empty(r.get("country"))]
+    if no_country:
+        warnings.append(f"Без страны происхождения: {_ru_positions(len(no_country))}.")
+
+    no_unit = [r for r in recs if _protocol_empty(r.get("unit"))]
+    if no_unit:
+        warnings.append(f"Без единицы измерения: {_ru_positions(len(no_unit))}.")
+
+    mismatch = []
+    swapped = []
+    heavy_net = []
+    order_arts = []
+    for rec in recs:
+        art = str(rec.get("article") or "").strip()
+        qty = _protocol_num(rec.get("qty"))
+        price = _protocol_num(rec.get("price"))
+        amount = _protocol_num(rec.get("amount"))
+        net = _protocol_num(rec.get("net_weight"))
+        gross = _protocol_num(rec.get("gross_weight"))
+        if qty is not None and price is not None and amount is not None:
+            expected = qty * price
+            tol = max(0.05, abs(amount) * 0.015)
+            if abs(expected - amount) > tol:
+                mismatch.append(art or "?")
+        if (
+            qty is not None
+            and price is not None
+            and not float(qty).is_integer()
+            and float(price).is_integer()
+            and abs(qty) >= 1
+        ):
+            swapped.append(art or "?")
+        if net is not None and gross is not None and net > gross + 0.05:
+            heavy_net.append(art or "?")
+        if re.match(r"(?i)^order[_\-\s]", art) or re.match(r"(?i)^po[_\-\s/#]", art):
+            order_arts.append(art)
+
+    if mismatch:
+        warnings.append(
+            "Сумма строки не равна количество × цена: "
+            + _protocol_arts([{"article": a} for a in mismatch])
+            + ". Возможно, перепутаны столбцы."
+        )
+    if swapped:
+        warnings.append(
+            "Количество похоже на цену (дробное qty, целая цена): "
+            + _protocol_arts([{"article": a} for a in swapped])
+            + "."
+        )
+    if heavy_net:
+        warnings.append(
+            "Нетто больше брутто: "
+            + _protocol_arts([{"article": a} for a in heavy_net])
+            + "."
+        )
+    if order_arts:
+        warnings.append(
+            "В артикул попал номер заказа, а не SKU: "
+            + _protocol_arts([{"article": a} for a in order_arts])
+            + "."
+        )
+
+    seen: dict[str, int] = {}
+    dupes: list[str] = []
+    for rec in recs:
+        key = normalize(rec.get("article"))
+        if not key:
+            continue
+        seen[key] = seen.get(key, 0) + 1
+    for key, cnt in seen.items():
+        if cnt > 1:
+            dupes.append(key)
+    if dupes:
+        warnings.append(
+            "Повторяющиеся артикулы в результате: "
+            + _protocol_arts([{"article": a} for a in dupes])
+            + "."
+        )
+
+    if mode == "keyword_fallback":
+        warnings.append("ИИ недоступен или не ответил — файл собран по заголовкам, без модели.")
+    elif mode == "ai":
+        notes.append("Столбцы сопоставлены в режиме ИИ.")
+    elif mode == "keyword":
+        notes.append("Столбцы сопоставлены по заголовкам, без ИИ.")
+
+    for plan in mappings or []:
+        err = plan.get("error")
+        if err:
+            warnings.append(f"Лист «{plan.get('sheet') or '?'}»: {err}")
+
+    warnings = warnings[:12]
+    errors = errors[:8]
+
+    summary = f"В шаблон перенесено {_ru_positions(n)}."
+    if errors:
+        summary += " Есть ошибки — проверьте протокол."
+    elif warnings:
+        summary += " Есть замечания: часть данных не перенесена или выглядит подозрительно."
+    else:
+        summary += " Критичных замечаний нет."
+
+    return {
+        "summary": summary,
+        "errors": errors,
+        "warnings": warnings,
+        "notes": notes,
+        "items_found": n,
+    }
+
 
 def process(template_bytes: bytes, input_files: list[bytes], settings: dict | None = None) -> tuple[bytes, dict]:
     settings = settings or {}
@@ -885,6 +1120,7 @@ def process(template_bytes: bytes, input_files: list[bytes], settings: dict | No
     report = {
         "mode": "keyword",
         "items_found": len(merged),
+        "protocol": build_fill_protocol(merged, settings=settings, mode="keyword"),
         "items": {no: {k: (str(v) if isinstance(v, datetime.datetime) else v) for k, v in rec.items()}
                   for no, rec in sorted(merged.items())},
     }

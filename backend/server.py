@@ -7,6 +7,7 @@ import io
 import os
 import sys
 import json
+import base64
 import shutil
 import re
 import traceback
@@ -1016,20 +1017,19 @@ async def ai_analyze(
                 engine.process, template_bytes, input_bytes, settings
             )
             report = {**report, "mode": "keyword_fallback", "ai_error": str(e)}
+            proto = dict(report.get("protocol") or {})
+            warns = list(proto.get("warnings") or [])
+            warns.insert(0, "ИИ недоступен или не ответил — файл собран по заголовкам.")
+            proto["warnings"] = warns
+            summary = proto.get("summary") or ""
+            if summary and "замечан" not in summary and "ошибк" not in summary:
+                proto["summary"] = summary.rstrip(".") + ". Есть замечания."
+            report["protocol"] = proto
         except Exception as e2:
             traceback.print_exc()
             return JSONResponse({"error": str(e2)}, status_code=500)
 
-    headers = {
-        "Content-Disposition": 'attachment; filename="result.xlsx"',
-        "X-Items-Found": str(report.get("items_found", 0)),
-        "X-AI-Mode": str(report.get("mode", "ai")),
-    }
-    return StreamingResponse(
-        io.BytesIO(result_bytes),
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=headers,
-    )
+    return _xlsx_result_response(result_bytes, report)
 
 
 @app.get("/api/template")
@@ -1100,6 +1100,25 @@ async def _resolve_template(template: UploadFile | None) -> bytes:
     raise FileNotFoundError("Шаблон не найден: загрузите эталонный файл")
 
 
+def _xlsx_result_response(result_bytes: bytes, report: dict) -> StreamingResponse:
+    headers = {
+        "Content-Disposition": 'attachment; filename="result.xlsx"',
+        "X-Items-Found": str(report.get("items_found", 0)),
+        "X-AI-Mode": str(report.get("mode") or ""),
+        "Access-Control-Expose-Headers": "X-Items-Found, X-AI-Mode, X-Protocol",
+    }
+    protocol = report.get("protocol")
+    if protocol:
+        headers["X-Protocol"] = base64.b64encode(
+            json.dumps(protocol, ensure_ascii=False).encode("utf-8")
+        ).decode("ascii")
+    return StreamingResponse(
+        io.BytesIO(result_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
 @app.post("/api/preview")
 async def preview(
     inputs: list[UploadFile] = File(...),
@@ -1134,15 +1153,7 @@ async def process_files(
         result_bytes, report = await run_in_threadpool(
             engine.process, template_bytes, input_bytes, settings
         )
-        headers = {
-            "Content-Disposition": 'attachment; filename="result.xlsx"',
-            "X-Items-Found": str(report["items_found"]),
-        }
-        return StreamingResponse(
-            io.BytesIO(result_bytes),
-            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            headers=headers,
-        )
+        return _xlsx_result_response(result_bytes, report)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
     except Exception as e:

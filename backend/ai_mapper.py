@@ -1309,9 +1309,13 @@ def process_with_ai(
     _fill_missing_countries(merged)
 
     result_bytes = engine.fill_template(template_bytes, merged, settings)
+    mode = "ai"
     report = {
-        "mode": "ai",
+        "mode": mode,
         "items_found": len(merged),
+        "protocol": engine.build_fill_protocol(
+            merged, settings=settings, mappings=all_plans, mode=mode
+        ),
         "mappings": [
             {
                 "sheet": p.get("sheet"),

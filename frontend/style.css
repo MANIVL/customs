@@ -298,30 +298,41 @@ main { padding: 36px 0 56px; }
 }
 
 .error-log {
-  margin-top: 10px;
-  padding: 8px 10px;
-  border-radius: 8px;
-  background: #f8f8f8;
-  border: 1px solid #ddd;
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
   font-size: 13px;
+  color: var(--color-text);
+}
+.error-log.has-issues {
+  border-color: var(--color-warning);
+  background: var(--color-warning-highlight);
+}
+.error-log.has-errors {
+  border-color: var(--color-error);
+  background: var(--color-error-highlight);
 }
 .error-log h3 {
   margin: 0 0 6px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .error-log-summary {
-  margin-top: 6px;
+  margin: 0 0 8px;
   font-weight: 500;
+  color: var(--color-text);
 }
 .error-log ul {
   margin: 0;
   padding-left: 18px;
 }
-.error-log li { margin: 2px 0; }
+.error-log li { margin: 3px 0; }
 
-.log-error { color: #d32f2f; }
-.log-warning { color: #f57c00; }
-.log-unknown { color: #1976d2; }
+.log-error { color: var(--color-error); }
+.log-warning { color: var(--color-warning); }
+.log-unknown { color: var(--color-primary); }
+.log-note { color: var(--color-text-muted); }
 
 /* === Подвал === */
 footer {
