@@ -1193,7 +1193,12 @@ def _merge_ai_workbooks(all_items: list[dict[int, dict]]) -> dict[int, dict]:
 
 
 def _fill_missing_countries(items: dict[int, dict]) -> None:
-    codes = [rec.get("country") for rec in items.values() if rec.get("country") not in (None, "")]
+    codes = []
+    for rec in items.values():
+        c = rec.get("country")
+        if c in (None, "") or isinstance(c, (list, dict, tuple)):
+            continue
+        codes.append(str(c))
     if not codes:
         return
     top = max(set(codes), key=codes.count)
@@ -1296,9 +1301,17 @@ def process_with_ai(
     all_items: list[dict[int, dict]] = []
     all_plans: list[dict] = []
     for content, fname in zip(input_files, filenames):
-        items, plans = extract_items_from_workbook_ai(content, filename=fname)
-        all_items.append(items)
-        all_plans.extend(plans)
+        try:
+            items, plans = extract_items_from_workbook_ai(content, filename=fname)
+            all_items.append(items)
+            all_plans.extend(plans)
+        except Exception as e:
+            all_plans.append({
+                "sheet": fname or "file",
+                "mapping": {},
+                "error": str(e).strip() or e.__class__.__name__,
+                "source": "load",
+            })
 
     merged = _merge_ai_workbooks(all_items)
     if not merged:
@@ -1308,7 +1321,12 @@ def process_with_ai(
 
     _fill_missing_countries(merged)
 
-    result_bytes = engine.fill_template(template_bytes, merged, settings)
+    try:
+        result_bytes = engine.fill_template(template_bytes, merged, settings)
+    except Exception as e:
+        raise RuntimeError(
+            "Не удалось заполнить шаблон: " + (str(e).strip() or e.__class__.__name__)
+        ) from e
     mode = "ai"
     try:
         protocol = engine.build_fill_protocol(

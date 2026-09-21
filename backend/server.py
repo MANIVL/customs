@@ -28,7 +28,7 @@ import yandex_gpt
 
 from fastapi import FastAPI, UploadFile, File, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import Response, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -162,7 +162,20 @@ _init_app_db()
 _init_template_storage()
 
 app = FastAPI(title="ТаможенФормат")
-APP_VERSION = "2026-09-21.3"
+APP_VERSION = "2026-09-21.4"
+
+
+def _public_error(exc: BaseException) -> str:
+    """Human-readable error; empty AssertionError becomes a file:line hint."""
+    msg = (str(exc) or "").strip() or exc.__class__.__name__
+    frames = traceback.extract_tb(exc.__traceback__) if exc.__traceback__ else []
+    if not frames:
+        return msg
+    last = frames[-1]
+    loc = f"{os.path.basename(last.filename)}:{last.lineno}"
+    if not (str(exc) or "").strip():
+        return f"{exc.__class__.__name__} в {loc} ({last.name})"
+    return f"{msg} [{exc.__class__.__name__} в {loc}]"
 
 
 @app.exception_handler(RequestValidationError)
@@ -1041,13 +1054,16 @@ async def ai_analyze(
             report["protocol"] = proto
         except Exception as e2:
             traceback.print_exc()
-            return JSONResponse({"error": str(e2) or e2.__class__.__name__}, status_code=500)
+            return JSONResponse(
+                {"error": f"{_public_error(e2)} (после ошибки ИИ: {_public_error(e)})"},
+                status_code=500,
+            )
 
     try:
         return _xlsx_result_response(result_bytes, report)
     except Exception as e3:
         traceback.print_exc()
-        return JSONResponse({"error": str(e3) or e3.__class__.__name__}, status_code=500)
+        return JSONResponse({"error": _public_error(e3)}, status_code=500)
 
 
 @app.get("/api/template")
@@ -1118,7 +1134,7 @@ async def _resolve_template(template: UploadFile | None) -> bytes:
     raise FileNotFoundError("Шаблон не найден: загрузите эталонный файл")
 
 
-def _xlsx_result_response(result_bytes: bytes, report: dict) -> StreamingResponse:
+def _xlsx_result_response(result_bytes: bytes, report: dict) -> Response:
     headers = {
         "Content-Disposition": 'attachment; filename="result.xlsx"',
         "X-Items-Found": str(report.get("items_found", 0)),
@@ -1136,8 +1152,8 @@ def _xlsx_result_response(result_bytes: bytes, report: dict) -> StreamingRespons
                 headers["X-Protocol"] = encoded
         except Exception:
             traceback.print_exc()
-    return StreamingResponse(
-        io.BytesIO(result_bytes),
+    return Response(
+        content=result_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
@@ -1160,7 +1176,7 @@ async def preview(
         return JSONResponse({"error": str(e)}, status_code=422)
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _public_error(e)}, status_code=500)
 
 
 @app.post("/api/process")
@@ -1182,7 +1198,7 @@ async def process_files(
         return JSONResponse({"error": str(e)}, status_code=422)
     except Exception as e:
         traceback.print_exc()
-        return JSONResponse({"error": str(e)}, status_code=500)
+        return JSONResponse({"error": _public_error(e)}, status_code=500)
 
 
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")

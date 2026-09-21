@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import io
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -815,6 +816,36 @@ def find_template_table(ws: Worksheet, max_scan_rows: int = 20):
     return header_row, columns
 
 
+_ILLEGAL_CELL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _excel_safe_value(value: Any):
+    """Coerce a mapped cell so openpyxl will not treat it as a formula or crash."""
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isnan(value) or math.isinf(value):
+            return None
+        return value
+    if isinstance(value, (datetime.datetime, datetime.date, datetime.time)):
+        return value
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8")
+        except Exception:
+            value = value.decode("latin-1", errors="replace")
+    if not isinstance(value, str):
+        value = str(value)
+    value = _ILLEGAL_CELL_RE.sub("", value).strip()
+    if not value:
+        return None
+    return value[:32767]
+
+
 def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict) -> bytes:
     wb = openpyxl.load_workbook(io.BytesIO(template_bytes))
     ws = wb.worksheets[0]
@@ -833,7 +864,10 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
             col = columns.get(field_key)
             if not col:
                 return
-            cell = ws.cell(row=row, column=col, value=value)
+            safe = _excel_safe_value(value)
+            cell = ws.cell(row=row, column=col, value=safe)
+            if isinstance(safe, str):
+                cell.data_type = "s"
             cell.font = DATA_FONT
             cell.alignment = DATA_ALIGNMENT
             numfmt = DATA_NUMBER_FORMATS.get(field_key)
@@ -864,7 +898,12 @@ def fill_template(template_bytes: bytes, items: dict[int, dict], settings: dict)
         put("mnr_code2", rec.get("mnr_code2"))
 
     out = io.BytesIO()
-    wb.save(out)
+    try:
+        wb.save(out)
+    except Exception as e:
+        raise RuntimeError(
+            "Не удалось сохранить шаблон: " + (str(e).strip() or e.__class__.__name__)
+        ) from e
     return out.getvalue()
 
 
@@ -1110,9 +1149,18 @@ def build_fill_protocol(
 def process(template_bytes: bytes, input_files: list[bytes], settings: dict | None = None) -> tuple[bytes, dict]:
     settings = settings or {}
     items_list = []
+    load_errors: list[str] = []
     for content in input_files:
-        wb = excel_io.load_workbook(content, data_only=True)
-        items_list.append(extract_items_from_workbook(wb))
+        try:
+            wb = excel_io.load_workbook(content, data_only=True)
+            items_list.append(extract_items_from_workbook(wb))
+        except Exception as e:
+            load_errors.append(str(e).strip() or e.__class__.__name__)
+    if not items_list:
+        raise RuntimeError(
+            "Не удалось прочитать входные файлы"
+            + (": " + "; ".join(load_errors) if load_errors else "")
+        )
 
     merged = merge_workbooks(items_list)
     result_bytes = fill_template(template_bytes, merged, settings)
@@ -1127,6 +1175,10 @@ def process(template_bytes: bytes, input_files: list[bytes], settings: dict | No
             "notes": [],
             "items_found": len(merged),
         }
+    if load_errors:
+        warns = list(protocol.get("warnings") or [])
+        warns.insert(0, "Часть файлов не прочитана: " + "; ".join(load_errors))
+        protocol["warnings"] = warns
 
     report = {
         "mode": "keyword",
