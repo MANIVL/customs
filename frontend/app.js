@@ -714,8 +714,12 @@
       fd.append('country', el.countryInput.value.trim() || 'CN');
       fd.append('unit', el.unitInput.value.trim() || 'шт');
 
-      fetch(API + '/api/ai/analyze', { method: 'POST', body: fd })
+      var controller = new AbortController();
+      var timeoutId = setTimeout(function () { controller.abort(); }, 120000);
+
+      fetch(API + '/api/ai/analyze', { method: 'POST', body: fd, signal: controller.signal })
         .then(function (res) {
+          clearTimeout(timeoutId);
           clearInterval(progressTimer);
           setProgress(100);
           if (!res.ok) {
@@ -732,8 +736,12 @@
           }
         })
         .catch(function (e) {
+          clearTimeout(timeoutId);
           clearInterval(progressTimer);
-          showError('ИИ-анализ не удался: ' + e.message);
+          var msg = e && e.name === 'AbortError'
+            ? 'ИИ-анализ превысил время ожидания. Попробуйте ещё раз или используйте «Скачать готовый файл».'
+            : ('ИИ-анализ не удался: ' + (e && e.message ? e.message : e));
+          showError(msg);
         })
         .finally(function () {
           hideProgress();

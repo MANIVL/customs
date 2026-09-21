@@ -57,8 +57,11 @@ HEADER_EXACT = [
     ("описание товара", "name"),  # group title — may be overridden by samples
     ("описание", "name"),
     ("description", "name"),
+    ("код изделия", "article"),
     ("код товара", "tariff_code"),
+    ("таможенный код", "tariff_code"),
     ("тн вэд", "tariff_code"),
+    ("hs code", "tariff_code"),
     ("tariff", "tariff_code"),
     ("кол-во мест", "cll"),
     ("количество мест", "cll"),
@@ -66,6 +69,21 @@ HEADER_EXACT = [
     ("cartons", "cll"),
     ("кол-во кор", "cll"),
     ("кол во кор", "cll"),
+    ("кол-во паллет", "cll"),
+    ("количество паллет", "cll"),
+    ("кол-во шт на паллете", "_skip"),
+    ("qty per pallet", "_skip"),
+    ("вес нетто/паллет", "_skip"),
+    ("вес гросс/паллет", "_skip"),
+    ("нетто/паллет", "_skip"),
+    ("гросс/паллет", "_skip"),
+    ("общий вес нетто", "net_weight"),
+    ("общий вес гросс", "gross_weight"),
+    ("общий вес брутто", "gross_weight"),
+    ("total net weight", "net_weight"),
+    ("total gross weight", "gross_weight"),
+    ("всего шт", "qty"),
+    ("всего, шт", "qty"),
     ("кол-во", "qty"),
     ("количество", "qty"),
     ("q-ty", "qty"),
@@ -109,6 +127,7 @@ HEADER_EXACT = [
     # Short tokens last — matched as whole words only (see _header_phrase_match)
     ("кор", "cll"),
     ("ctn", "cll"),
+    ("гросс", "gross_weight"),
 ]
 
 ARTICLE_RE = re.compile(r"^[A-Za-zА-Яа-яЁё0-9][A-Za-zА-Яа-яЁё0-9._\-/]{1,40}$")
@@ -131,6 +150,11 @@ SKIP_ROW_MARKERS = (
     "packing:", "measurement:", "order no", "контейнер", "container",
 )
 SUM_FIELDS = frozenset({"qty", "amount", "net_weight", "gross_weight", "cll"})
+MAX_EXTRACT_ROWS = 1500
+_CATALOG_NAME_MARKERS = (
+    "прайс", "каталог", "справочник", "pricelist", "price list",
+    "catalog", "nomenclature", "номенклатур",
+)
 
 SYSTEM_PROMPT = """Ты помощник по таможенным Excel-документам.
 Тебе дают листы: заголовки с номерами столбцов (col), подзаголовки и примеры ячеек {col: значение}.
@@ -223,6 +247,27 @@ def _looks_like_currency(val: Any) -> bool:
 def _looks_like_unit(val: Any) -> bool:
     s = _cell_str(val).lower().rstrip(".")
     return s in UNIT_TOKENS
+
+
+def _looks_like_hs_code(val: Any) -> bool:
+    s = _cell_str(val).replace(" ", "").replace(".", "")
+    return bool(re.fullmatch(r"\d{6,12}", s))
+
+
+def _sheet_is_catalog(summary: dict) -> bool:
+    """Skip price-list / nomenclature sheets (thousands of SKUs, not the shipment)."""
+    name = engine.normalize(summary.get("sheet") or "")
+    compact = re.sub(r"[^a-zа-яё0-9]+", "", name)
+    if compact in {"прайс", "price", "catalog", "каталог"}:
+        return True
+    if any(m in name for m in _CATALOG_NAME_MARKERS):
+        return True
+    max_row = int(summary.get("max_row") or 0)
+    if max_row < 400:
+        return False
+    km = summary.get("keyword_mapping") or {}
+    has_trade = any(km.get(k) for k in ("price", "amount", "net_weight", "gross_weight"))
+    return not has_trade
 
 
 def _find_candidate_header_rows(ws: Worksheet, max_scan: int = 50) -> list[int]:
@@ -318,8 +363,7 @@ def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
             continue
         # Skip long free-text / codes mistaken for headers
         if len(norm) > 40 or _looks_like_article(h["text"]) or _looks_like_name(h["text"]):
-            # still allow exact short labels
-            if not any(_header_phrase_match(p, norm) for p, _f in HEADER_EXACT if len(p) <= 12):
+            if not any(_header_phrase_match(p, norm) for p, _f in HEADER_EXACT):
                 continue
         for phrase, field in HEADER_EXACT:
             if not _header_phrase_match(phrase, norm):
@@ -327,10 +371,11 @@ def _keyword_mapping_from_headers(headers: list[dict]) -> dict[str, int]:
             # PO/Order No is not the product SKU (Item NO / артикул is).
             if field == "article" and any(x in norm for x in ("po/no", "po no", "order no", "номер заказа")) and "item" not in norm:
                 continue
-            # «Общий гросс» / total gross is a totals column, not line weight.
+            # «Общий гросс» without «вес» is an extras total, not line weight.
+            # Keep «общий вес нетто/гросс» — that is the SKU line total.
             if field in ("gross_weight", "net_weight", "amount") and (
                 "общ" in norm or "total" in norm or "grand" in norm
-            ):
+            ) and "вес" not in norm and "weight" not in norm:
                 continue
             assign(field, h["col"])
             break
@@ -389,6 +434,7 @@ def summarize_sheet(ws: Worksheet) -> dict:
 
     return {
         "sheet": ws.title,
+        "max_row": ws.max_row or 0,
         "header_candidates": header_candidates,
         "suggested_header_row": best,
         "header_rows": header_rows,
@@ -529,6 +575,12 @@ def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict
             if q_dec >= 2 and p_int >= 2 and q_int <= p_int:
                 mapping["qty"], mapping["price"] = price_col, qty_col
 
+    qty_only = mapping.get("qty")
+    if qty_only:
+        qvals = sample_vals(qty_only)
+        if qvals and sum(_looks_like_hs_code(v) for v in qvals) >= max(2, (len(qvals) + 1) // 2):
+            del mapping["qty"]
+
     # «Общий гросс» is a total, not the line gross weight.
     headers_by_col = {
         h["col"]: engine.normalize(h.get("text") or "")
@@ -537,7 +589,7 @@ def _refine_mapping_with_samples(mapping: dict[str, int], summary: dict) -> dict
     gw = mapping.get("gross_weight")
     if gw:
         gw_txt = headers_by_col.get(gw, "")
-        if "общ" in gw_txt or "total" in gw_txt:
+        if ("общ" in gw_txt or "total" in gw_txt) and "вес" not in gw_txt and "weight" not in gw_txt:
             used_now = set(mapping.values())
             for col, text in headers_by_col.items():
                 if col == gw or col in used_now:
@@ -625,8 +677,8 @@ def _infer_missing_from_samples(mapping: dict[str, int], samples: list[dict]) ->
                 used.add(col)
                 break
 
-    # Numeric fields still missing — only fill price/amount near currency columns
-    for field in ("qty", "net_weight", "gross_weight", "cll"):
+    # Numeric fields still missing — only qty from leftover number columns
+    for field in ("qty",):
         if field in mapping:
             continue
         best_col = None
@@ -638,6 +690,8 @@ def _infer_missing_from_samples(mapping: dict[str, int], samples: list[dict]) ->
                 continue
             vs = vals(col)
             if not vs:
+                continue
+            if field == "qty" and sum(_looks_like_hs_code(v) for v in vs) >= 2:
                 continue
             if any(_looks_like_name(v) or _looks_like_article(v) for v in vs):
                 continue
@@ -713,6 +767,8 @@ def _merge_mappings(keyword: dict[str, int], ai: dict[str, int], summary: dict) 
 
 
 def _sheet_looks_useful(summary: dict) -> bool:
+    if _sheet_is_catalog(summary):
+        return False
     if len(summary["headers"]) < 2 and not (summary.get("keyword_mapping") or {}).get("article"):
         # Still useful if wide samples have article-like codes
         samples = summary.get("samples") or []
@@ -835,6 +891,9 @@ def _is_skip_row(rec: dict) -> bool:
         return True
     if "shipping marks" in art_s or "order no" in art_s:
         return True
+    art_n = engine.normalize(art)
+    if art_n in {"amount", "net to pay", "паллетизация", "palletization"}:
+        return True
     if not art_s and name_s and not re.search(r"[A-Za-zА-Яа-яЁё0-9]", name_s):
         return True
     return False
@@ -870,6 +929,44 @@ def _merge_field(target: dict, key: str, value: Any) -> None:
         return
     if target.get(key) in (None, ""):
         target[key] = value
+
+
+def _absorb_detail_rows(ws: Worksheet, item_row: int, rec: dict, mapping: dict[str, int]) -> None:
+    """Invoice lines often put name / HS / country on the rows under the SKU."""
+    art_col = mapping.get("article")
+    qty_col = mapping.get("qty")
+    max_c = min(ws.max_column or 12, 20)
+    last = ws.max_row or item_row
+    for r2 in range(item_row + 1, min(item_row + 6, last + 1)):
+        art2 = ws.cell(r2, art_col).value if art_col else None
+        qty2 = ws.cell(r2, qty_col).value if qty_col else None
+        if (
+            art2 not in (None, "")
+            and (_looks_like_sku(art2) or (_looks_like_article(art2) and not _looks_like_name(art2)))
+            and _to_number(qty2) is not None
+        ):
+            break
+        if engine.is_summary_item(art2, None):
+            break
+        for c in range(1, max_c + 1):
+            raw = ws.cell(r2, c).value
+            if raw in (None, ""):
+                continue
+            text = _cell_str(raw)
+            norm = engine.normalize(text)
+            nxt = ws.cell(r2, c + 1).value if c < max_c else None
+            if any(k in norm for k in ("таможенный код", "тн вэд", "hs code", "код тн", "тариф")):
+                if rec.get("tariff_code") in (None, "") and nxt not in (None, ""):
+                    rec["tariff_code"] = nxt
+                continue
+            if any(k in norm for k in ("страна происхождения", "country of origin", "origin country")):
+                if rec.get("country") in (None, ""):
+                    code = countries.resolve_country(nxt) or countries.resolve_country(text)
+                    if code:
+                        rec["country"] = code
+                continue
+            if rec.get("name") in (None, "") and _looks_like_name(raw) and not engine.is_summary_item(raw, None):
+                rec["name"] = raw if isinstance(raw, str) else text
 
 
 def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
@@ -943,6 +1040,9 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
             continue
         if art in (None, "") and _cell_str(name).isdigit():
             continue
+        if mapping.get("qty") and rec.get("qty") in (None, "") and rec.get("price") in (None, ""):
+            if rec.get("net_weight") in (None, "") and rec.get("gross_weight") in (None, ""):
+                continue
         # Require a real article code when the column is mapped
         if art not in (None, "") and not _looks_like_article(art):
             # Allow if name exists and art looks like a code with spaces stripped oddly
@@ -963,7 +1063,16 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
             if cert:
                 rec.update(cert)
 
+        _absorb_detail_rows(ws, r, rec, mapping)
+        if rec.get("amount") in (None, "") and rec.get("qty") not in (None, "") and rec.get("price") not in (None, ""):
+            try:
+                rec["amount"] = round(float(rec["qty"]) * float(rec["price"]), 4)
+            except (TypeError, ValueError):
+                pass
+
         items[item_no] = rec
+        if len(items) >= MAX_EXTRACT_ROWS:
+            break
 
     return items
 
