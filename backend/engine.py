@@ -127,6 +127,42 @@ def any_header_keyword(keywords: list[str], norm: str) -> bool:
     return any(header_keyword_matches(kw, norm) for kw in keywords)
 
 
+_SUMMARY_HEADS = (
+    "всего", "итого", "total", "sum", "subtotal", "grand total",
+    "паллет", "паллет всего", "всего паллет",
+)
+
+
+def is_summary_label(text: Any) -> bool:
+    """True for a totals cell, not a product description that mentions «всего 12 кв.м»."""
+    s = normalize(text).strip(" .:;-")
+    if not s:
+        return False
+    if s in _SUMMARY_HEADS:
+        return True
+    if len(s) > 48:
+        return False
+    return s.startswith(_SUMMARY_HEADS)
+
+
+def is_summary_item(article: Any, name: Any) -> bool:
+    """Skip invoice total/pallet lines; keep goods whose description contains «всего»."""
+    art = str(article or "").strip()
+    art_l = art.lower()
+    if is_summary_label(art):
+        return True
+    if art_l.startswith(("shipping", "packing", "order no", "measurement")):
+        return True
+    if art_l.startswith("container") or (len(art_l) < 40 and "контейнер" in art_l):
+        return True
+    if art_l in {"артикул", "article", "sku", "шт", "шт."}:
+        return True
+    name_s = str(name or "").strip()
+    if name_s and len(name_s) < 48 and is_summary_label(name_s):
+        return True
+    return False
+
+
 def parse_date(text: str) -> datetime.datetime | None:
     try:
         return datetime.datetime.strptime(text.strip(), "%d.%m.%Y")
@@ -579,20 +615,7 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                 art = rec.get("article")
                 if art in (None, ""):
                     continue
-                art_l = str(art).lower()
-                name_l = str(rec.get("name") or "").lower()
-                # Only skip summary/pallet totals — do not scan every field
-                # (e.g. cll/package text with «паллет» must not drop certs).
-                if any(
-                    m in art_l or m in name_l
-                    for m in ("sum", "total", "всего", "паллет")
-                ):
-                    continue
-                if art_l.startswith("shipping") or art_l.startswith("packing") or art_l.startswith("order no"):
-                    continue
-                if art_l.startswith("measurement") or "контейнер" in art_l:
-                    continue
-                if art_l in {"артикул", "article", "sku", "шт", "шт."}:
+                if is_summary_item(art, rec.get("name")):
                     continue
                 # Category section titles without qty
                 if rec.get("qty") in (None, "") and rec.get("price") in (None, "") and " " in str(art):

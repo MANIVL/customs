@@ -692,31 +692,19 @@ def _sheet_kind(name: str) -> str:
 
 
 def _is_skip_row(rec: dict) -> bool:
-    art = _cell_str(rec.get("article")).lower()
-    name = _cell_str(rec.get("name")).lower()
-    if art in HEADER_LIKE_ARTICLES or name in HEADER_LIKE_ARTICLES:
+    art = rec.get("article")
+    name = rec.get("name")
+    art_s = _cell_str(art).lower()
+    name_s = _cell_str(name).lower()
+    if art_s in HEADER_LIKE_ARTICLES or name_s in HEADER_LIKE_ARTICLES:
         return True
-    if art in {"sum", "total"} or name in {"sum", "total"}:
+    if engine.is_summary_item(art, name):
         return True
-    if art.startswith("the ") or "seller" in art:
+    if art_s.startswith("the ") or "seller" in art_s:
         return True
-    if "паллет" in art or "паллет" in name:
+    if "shipping marks" in art_s or "order no" in art_s:
         return True
-    if "вес паллет" in art or "вес паллет" in name:
-        return True
-    if art.startswith("shipping") or art.startswith("packing") or art.startswith("order no"):
-        return True
-    if "shipping marks" in art or "order no" in art:
-        return True
-    if "контейнер" in art or art.startswith("container"):
-        return True
-    blob = " ".join(_cell_str(v).lower() for v in rec.values())
-    if any(m in blob for m in SKIP_ROW_MARKERS):
-        # Keep real product rows that merely mention a word inside description
-        if _looks_like_article(rec.get("article")) and (_to_number(rec.get("qty")) is not None):
-            return False
-        return True
-    if not art and name and not re.search(r"[A-Za-zА-Яа-яЁё0-9]", name):
+    if not art_s and name_s and not re.search(r"[A-Za-zА-Яа-яЁё0-9]", name_s):
         return True
     return False
 
