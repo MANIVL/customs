@@ -1149,6 +1149,59 @@ def _combine_invoice_and_packing(invoice: dict[int, dict], packing: dict[int, di
     return {i + 1: by_art[k] for i, k in enumerate(order)}
 
 
+def _has_price(rec: dict) -> bool:
+    return rec.get("price") not in (None, "") or rec.get("amount") not in (None, "")
+
+
+def _has_weight(rec: dict) -> bool:
+    return any(rec.get(k) not in (None, "") for k in ("net_weight", "gross_weight", "cll"))
+
+
+def _partition_invoice_packing(items: dict[int, dict]) -> tuple[dict[int, dict], dict[int, dict]]:
+    invoice: dict[int, dict] = {}
+    packing: dict[int, dict] = {}
+    i_inv = i_pk = 1
+    for rec in items.values():
+        rec = dict(rec)
+        if _has_price(rec):
+            invoice[i_inv] = rec
+            i_inv += 1
+        elif _has_weight(rec):
+            packing[i_pk] = rec
+            i_pk += 1
+        else:
+            invoice[i_inv] = rec
+            i_inv += 1
+    return invoice, packing
+
+
+def _merge_ai_workbooks(all_items: list[dict[int, dict]]) -> dict[int, dict]:
+    """Invoice files stay primary; packing only attaches weights (and leftover SKUs)."""
+    inv_list: list[dict[int, dict]] = []
+    pk_list: list[dict[int, dict]] = []
+    for items in all_items:
+        inv, pk = _partition_invoice_packing(items)
+        if inv:
+            inv_list.append(inv)
+        if pk:
+            pk_list.append(pk)
+    invoice = _merge_by_article_or_no(inv_list, sum_numeric=True)
+    packing = _merge_by_article_or_no(pk_list, sum_numeric=True)
+    if invoice or packing:
+        return _combine_invoice_and_packing(invoice, packing)
+    return {}
+
+
+def _fill_missing_countries(items: dict[int, dict]) -> None:
+    codes = [rec.get("country") for rec in items.values() if rec.get("country") not in (None, "")]
+    if not codes:
+        return
+    top = max(set(codes), key=codes.count)
+    for rec in items.values():
+        if rec.get("country") in (None, ""):
+            rec["country"] = top
+
+
 def extract_items_from_workbook_ai(content: bytes, filename: str | None = None) -> tuple[dict[int, dict], list[dict]]:
     wb = excel_io.load_workbook(content, data_only=True, filename=filename)
     summaries = [summarize_sheet(ws) for ws in wb.worksheets]
@@ -1247,11 +1300,13 @@ def process_with_ai(
         all_items.append(items)
         all_plans.extend(plans)
 
-    merged = _merge_by_article_or_no(all_items)
+    merged = _merge_ai_workbooks(all_items)
     if not merged:
         errors = [p.get("error") for p in all_plans if p.get("error")]
         detail = errors[0] if errors else "ИИ не смог сопоставить столбцы"
         raise RuntimeError(detail)
+
+    _fill_missing_countries(merged)
 
     result_bytes = engine.fill_template(template_bytes, merged, settings)
     report = {
