@@ -836,7 +836,7 @@ def map_all_sheets(summaries: list[dict]) -> list[dict]:
             SYSTEM_PROMPT,
             json.dumps(payload, ensure_ascii=False, indent=2),
             temperature=0.0,
-            max_tokens=4000,
+            max_tokens=2000,
         )
         data = _parse_json_reply(reply)
         for item in _as_sheet_list(data):
@@ -1310,12 +1310,22 @@ def process_with_ai(
 
     result_bytes = engine.fill_template(template_bytes, merged, settings)
     mode = "ai"
+    try:
+        protocol = engine.build_fill_protocol(
+            merged, settings=settings, mappings=all_plans, mode=mode
+        )
+    except Exception:
+        protocol = {
+            "summary": f"В шаблон перенесено {len(merged)} позиций.",
+            "errors": [],
+            "warnings": [],
+            "notes": [],
+            "items_found": len(merged),
+        }
     report = {
         "mode": mode,
         "items_found": len(merged),
-        "protocol": engine.build_fill_protocol(
-            merged, settings=settings, mappings=all_plans, mode=mode
-        ),
+        "protocol": protocol,
         "mappings": [
             {
                 "sheet": p.get("sheet"),

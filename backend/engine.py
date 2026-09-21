@@ -1117,10 +1117,21 @@ def process(template_bytes: bytes, input_files: list[bytes], settings: dict | No
     merged = merge_workbooks(items_list)
     result_bytes = fill_template(template_bytes, merged, settings)
 
+    try:
+        protocol = build_fill_protocol(merged, settings=settings, mode="keyword")
+    except Exception:
+        protocol = {
+            "summary": f"В шаблон перенесено {len(merged)} позиций.",
+            "errors": [],
+            "warnings": [],
+            "notes": [],
+            "items_found": len(merged),
+        }
+
     report = {
         "mode": "keyword",
         "items_found": len(merged),
-        "protocol": build_fill_protocol(merged, settings=settings, mode="keyword"),
+        "protocol": protocol,
         "items": {no: {k: (str(v) if isinstance(v, datetime.datetime) else v) for k, v in rec.items()}
                   for no, rec in sorted(merged.items())},
     }

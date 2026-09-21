@@ -55,6 +55,7 @@ def complete(system: str, user: str, *, temperature: float = 0.1, max_tokens: in
     if not is_configured():
         raise RuntimeError("YandexGPT не настроен: задайте YANDEX_API_KEY и YANDEX_FOLDER_ID")
 
+    timeout = int(os.environ.get("YANDEX_TIMEOUT", "20"))
     payload = {
         "modelUri": model_uri(),
         "completionOptions": {
@@ -78,11 +79,15 @@ def complete(system: str, user: str, *, temperature: float = 0.1, max_tokens: in
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=90) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", errors="replace")[:500]
         raise RuntimeError(f"YandexGPT HTTP {e.code}: {detail}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"YandexGPT не ответил за {timeout} с ({e.reason})") from e
+    except TimeoutError as e:
+        raise RuntimeError(f"YandexGPT не ответил за {timeout} с") from e
 
     alternatives = body.get("result", {}).get("alternatives") or []
     if not alternatives:

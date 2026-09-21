@@ -304,6 +304,32 @@
     }
   }
 
+  function formatApiError(d, status) {
+    if (d && typeof d.error === 'string' && d.error) return d.error;
+    if (d && typeof d.message === 'string' && d.message) return d.message;
+    if (d && typeof d.detail === 'string' && d.detail) return d.detail;
+    if (d && Array.isArray(d.detail) && d.detail.length) {
+      return d.detail.map(function (x) {
+        if (typeof x === 'string') return x;
+        return (x && (x.msg || x.message)) || JSON.stringify(x);
+      }).join('; ');
+    }
+    return 'Ошибка сервера (HTTP ' + (status || '?') + ')';
+  }
+
+  function readErrorBody(res) {
+    return res.text().then(function (text) {
+      var d = {};
+      try { d = JSON.parse(text); } catch (e) {}
+      var msg = formatApiError(d, res.status);
+      if ((!d || (!d.error && !d.detail && !d.message)) && text) {
+        var snippet = text.replace(/\s+/g, ' ').trim().slice(0, 240);
+        if (snippet && snippet.charAt(0) !== '{') msg += ': ' + snippet;
+      }
+      throw new Error(msg);
+    });
+  }
+
   function showErrorLog(log) {
     if (!el.errorLog) return;
     log = log || {};
@@ -368,7 +394,7 @@
 
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || 'Ошибка формирования файла');
+        throw new Error(formatApiError(data, res.status) || 'Ошибка формирования файла');
       }
 
       const protocol = parseProtocol(res);
@@ -742,9 +768,7 @@
           clearTimeout(timeoutId);
           clearInterval(progressTimer);
           setProgress(100);
-          if (!res.ok) {
-            return res.json().then(function (d) { throw new Error(d.error || 'Ошибка ИИ-анализа'); });
-          }
+          if (!res.ok) return readErrorBody(res);
           var protocol = parseProtocol(res);
           return res.blob().then(function (blob) {
             return { blob: blob, protocol: protocol };

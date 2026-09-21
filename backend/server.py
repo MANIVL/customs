@@ -26,7 +26,8 @@ import engine
 import ai_mapper
 import yandex_gpt
 
-from fastapi import FastAPI, UploadFile, File, Form, Query
+from fastapi import FastAPI, UploadFile, File, Form, Query, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
@@ -161,7 +162,20 @@ _init_app_db()
 _init_template_storage()
 
 app = FastAPI(title="ТаможенФормат")
-APP_VERSION = "2026-09-14.5"
+APP_VERSION = "2026-09-21.3"
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error(_request: Request, exc: RequestValidationError):
+    parts = []
+    for err in exc.errors():
+        loc = ".".join(str(x) for x in (err.get("loc") or ()) if x != "body")
+        msg = err.get("msg") or "некорректное поле"
+        parts.append(f"{loc}: {msg}" if loc else msg)
+    return JSONResponse(
+        {"error": "; ".join(parts) or "Некорректный запрос"},
+        status_code=422,
+    )
 
 
 @app.middleware("http")
@@ -1027,9 +1041,13 @@ async def ai_analyze(
             report["protocol"] = proto
         except Exception as e2:
             traceback.print_exc()
-            return JSONResponse({"error": str(e2)}, status_code=500)
+            return JSONResponse({"error": str(e2) or e2.__class__.__name__}, status_code=500)
 
-    return _xlsx_result_response(result_bytes, report)
+    try:
+        return _xlsx_result_response(result_bytes, report)
+    except Exception as e3:
+        traceback.print_exc()
+        return JSONResponse({"error": str(e3) or e3.__class__.__name__}, status_code=500)
 
 
 @app.get("/api/template")
@@ -1109,9 +1127,15 @@ def _xlsx_result_response(result_bytes: bytes, report: dict) -> StreamingRespons
     }
     protocol = report.get("protocol")
     if protocol:
-        headers["X-Protocol"] = base64.b64encode(
-            json.dumps(protocol, ensure_ascii=False).encode("utf-8")
-        ).decode("ascii")
+        try:
+            encoded = base64.b64encode(
+                json.dumps(protocol, ensure_ascii=False).encode("utf-8")
+            ).decode("ascii")
+            # Proxies reject oversized response headers; keep protocol short.
+            if len(encoded) <= 3500:
+                headers["X-Protocol"] = encoded
+        except Exception:
+            traceback.print_exc()
     return StreamingResponse(
         io.BytesIO(result_bytes),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
