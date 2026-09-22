@@ -25,3 +25,5 @@ services:
         sync: false
       - key: YANDEX_MODEL
         value: yandexgpt-lite
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false

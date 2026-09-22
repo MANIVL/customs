@@ -345,6 +345,37 @@ def _read_meta():
     return {"filename": None, "updated_at": None}
 
 
+def load_template_bytes() -> bytes:
+    if os.path.exists(TEMPLATE_PATH):
+        with open(TEMPLATE_PATH, "rb") as f:
+            return f.read()
+    raise FileNotFoundError("Шаблон не найден: загрузите эталонный файл")
+
+
+def store_template(filename: str, content: bytes) -> dict:
+    """Save the shared reference template used by the site and the Telegram bot."""
+    if not filename or not str(filename).lower().endswith(".xlsx"):
+        raise ValueError("Эталонный шаблон должен быть в формате .xlsx")
+    if not content.startswith(b"PK"):
+        raise ValueError("Файл не является корректным .xlsx")
+    if len(content) > MAX_FILE_SIZE:
+        raise ValueError("Файл слишком большой (максимум 20 МБ)")
+    safe = _safe_filename(filename)
+    with open(TEMPLATE_PATH, "wb") as f:
+        f.write(content)
+    meta = {
+        "filename": safe,
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    with open(META_PATH, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False)
+    try:
+        _save_template_blob(content, meta["filename"], meta["updated_at"])
+    except Exception:
+        traceback.print_exc()
+    return meta
+
+
 class _AltaSvhParser(HTMLParser):
     """Extract result cards from Alta's public SVH/TS search page."""
 
@@ -880,6 +911,7 @@ def health():
         "data_dir": DATA_DIR,
         "template_exists": os.path.exists(TEMPLATE_PATH),
         "persistent_data": os.path.normpath(DATA_DIR) != os.path.normpath(BUNDLE_DATA_DIR),
+        "telegram": bool(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()),
     }
 
 
@@ -1086,26 +1118,9 @@ def download_template():
 async def upload_template(file: UploadFile = File(...)):
     content = await file.read()
     try:
-        if not file.filename or not file.filename.lower().endswith(".xlsx"):
-            raise ValueError("Эталонный шаблон должен быть в формате .xlsx")
-        if not content.startswith(b"PK"):
-            raise ValueError("Файл не является корректным .xlsx")
-        if len(content) > MAX_FILE_SIZE:
-            raise ValueError("Файл слишком большой (максимум 20 МБ)")
+        meta = store_template(file.filename or "", content)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
-    with open(TEMPLATE_PATH, "wb") as f:
-        f.write(content)
-    meta = {
-        "filename": _safe_filename(file.filename),
-        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    }
-    with open(META_PATH, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False)
-    try:
-        _save_template_blob(content, meta["filename"], meta["updated_at"])
-    except Exception:
-        traceback.print_exc()
     return {"exists": True, **meta}
 
 
@@ -1128,10 +1143,7 @@ async def _resolve_template(template: UploadFile | None) -> bytes:
         if content:
             _validate_excel(template.filename, content)
             return content
-    if os.path.exists(TEMPLATE_PATH):
-        with open(TEMPLATE_PATH, "rb") as f:
-            return f.read()
-    raise FileNotFoundError("Шаблон не найден: загрузите эталонный файл")
+    return load_template_bytes()
 
 
 def _xlsx_result_response(result_bytes: bytes, report: dict) -> JSONResponse:
@@ -1188,6 +1200,10 @@ async def process_files(
         traceback.print_exc()
         return JSONResponse({"error": _public_error(e)}, status_code=500)
 
+
+import telegram_bot
+
+telegram_bot.mount(app)
 
 FRONTEND_DIR = os.path.join(os.path.dirname(BASE_DIR), "frontend")
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")

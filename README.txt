@@ -42,6 +42,23 @@ APP_OPEN_BROWSER  — 0, чтобы не открывать браузер ав�
 YANDEX_API_KEY    — API-ключ Yandex Cloud (файл .env рядом с main.py)
 YANDEX_FOLDER_ID  — идентификатор каталога Yandex Cloud
 YANDEX_MODEL      — yandexgpt-lite или yandexgpt (по умолчанию lite)
+TELEGRAM_BOT_TOKEN — токен бота от @BotFather
+
+Telegram-бот
+------------
+Тот же сценарий, что на сайте, без поиска СВХ: загрузка Excel, обработка
+с ИИ или без ИИ, готовый файл и протокол ошибок.
+
+1. В Telegram откройте @BotFather, команда /newbot, скопируйте токен.
+2. Впишите его в .env: TELEGRAM_BOT_TOKEN=...
+3. Локально, из этой папки:
+
+  python bot.py
+
+На Render бот работает вместе с сайтом: добавьте TELEGRAM_BOT_TOKEN
+в Environment и сделайте Redeploy. Webhook ставится при старте сервиса.
+Шаблон один на сайт и бота. Заменить его в чате: /template
+Страна и единица по умолчанию: /settings
 
 ИИ-сопоставление столбцов
 -------------------------

@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY backend ./backend
 COPY frontend ./frontend
 COPY main.py .
+COPY bot.py .
 
 ENV APP_HOST=0.0.0.0
 ENV APP_OPEN_BROWSER=0
