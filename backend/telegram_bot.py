@@ -19,10 +19,12 @@ from dataclasses import dataclass, field
 import ai_mapper
 import engine
 import yandex_gpt
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.background import BackgroundTasks
 
 _sessions: dict[int, "Session"] = {}
 _locks: dict[int, asyncio.Lock] = {}
-_tasks: set[asyncio.Task] = set()
 _mounted = False
 
 WELCOME = (
@@ -662,20 +664,15 @@ def mount(app) -> None:
         return
     _mounted = True
 
-    from fastapi import Request
-    from fastapi.responses import JSONResponse
-
     @app.post("/api/telegram/webhook")
-    async def telegram_webhook(request: Request):
+    async def telegram_webhook(request: Request, background_tasks: BackgroundTasks):
         if not token():
             return JSONResponse({"ok": False, "error": "bot disabled"}, status_code=503)
         secret = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "").strip()
         if secret and request.headers.get("x-telegram-bot-api-secret-token") != secret:
             return JSONResponse({"ok": False}, status_code=401)
         update = await request.json()
-        task = asyncio.create_task(handle_update(update))
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
+        background_tasks.add_task(handle_update, update)
         return {"ok": True}
 
     @app.on_event("startup")
