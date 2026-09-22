@@ -393,20 +393,39 @@ def build_sheet_table(ws: Worksheet) -> SheetTable | None:
                     name_hits += 1
             if name_hits >= 2:
                 columns["name"] = cand
-    # If name was wrongly assigned to article-like col 2 before article inference
+    # If name was wrongly assigned to an article-like column before article inference.
+    # Do not override columns whose own headers already say «наименование» and «артикул»:
+    # a totals line under the name («Total invoice amount…») would otherwise look like
+    # two product descriptions and flip the columns when the sheet has only one item.
     if "article" in columns and "name" in columns and columns["name"] < columns["article"]:
-        # swap if values suggest it
-        art_c, name_c = columns["article"], columns["name"]
-        art_hits = name_hits = 0
-        for rr in range(header_row + 1, min(header_row + 8, (ws.max_row or header_row) + 1)):
-            a = ws.cell(row=rr, column=art_c).value
-            n = ws.cell(row=rr, column=name_c).value
-            if isinstance(a, str) and " " not in a.strip() and len(a.strip()) >= 4:
-                art_hits += 1
-            if isinstance(n, str) and " " in n.strip():
-                name_hits += 1
-        if art_hits < 2 and name_hits >= 2:
-            columns["article"], columns["name"] = name_c, art_c
+        def _header_blob(col: int) -> str:
+            parts = []
+            for rr in range(max(1, header_row - 2), header_row + 3):
+                if _row_looks_like_items(rr):
+                    continue
+                text = normalize(ws.cell(row=rr, column=col).value)
+                if text:
+                    parts.append(text)
+            return " ".join(parts)
+
+        art_header = _header_blob(columns["article"])
+        name_header = _header_blob(columns["name"])
+        headers_agree = (
+            any_header_keyword(HEADER_KEYWORDS["article"], art_header)
+            and any_header_keyword(HEADER_KEYWORDS["name"], name_header)
+        )
+        if not headers_agree:
+            art_c, name_c = columns["article"], columns["name"]
+            art_hits = name_hits = 0
+            for rr in range(header_row + 1, min(header_row + 8, (ws.max_row or header_row) + 1)):
+                a = ws.cell(row=rr, column=art_c).value
+                n = ws.cell(row=rr, column=name_c).value
+                if isinstance(a, str) and " " not in a.strip() and len(a.strip()) >= 4:
+                    art_hits += 1
+                if isinstance(n, str) and " " in n.strip() and not normalize(n).startswith(_SUMMARY_HEADS):
+                    name_hits += 1
+            if art_hits < 2 and name_hits >= 2:
+                columns["article"], columns["name"] = name_c, art_c
 
     # Walk down collecting item rows.
     item_rows: dict[int, int] = {}
