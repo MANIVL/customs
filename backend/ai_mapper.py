@@ -1087,7 +1087,10 @@ def _merge_by_article_or_no(items_list: list[dict[int, dict]], *, sum_numeric: b
             if _is_skip_row(rec):
                 continue
             art = rec.get("article")
-            key = engine.normalize(art) if art not in (None, "") else ""
+            key = engine.article_merge_key(art) or (f"#{_no}" if _no else "")
+            if not key:
+                name_k = engine.normalize(rec.get("name"))
+                key = f"~{name_k}" if name_k else ""
             if key:
                 if key not in by_article:
                     by_article[key] = dict(rec)
@@ -1117,18 +1120,23 @@ def _combine_invoice_and_packing(invoice: dict[int, dict], packing: dict[int, di
     """Attach packing weights to invoice lines; keep invoice qty/amount."""
     by_art: dict[str, dict] = {}
     order: list[str] = []
+    def _line_key(no, rec: dict) -> str:
+        art = engine.article_merge_key(rec.get("article"))
+        if art:
+            return art
+        name_k = engine.normalize(rec.get("name"))
+        if name_k:
+            return f"~{name_k}"
+        return f"#{no}"
+
     for _no, rec in invoice.items():
-        art = engine.normalize(rec.get("article"))
-        if not art:
-            continue
+        art = _line_key(_no, rec)
         by_art[art] = dict(rec)
         order.append(art)
 
     weight_fields = ("net_weight", "gross_weight", "cll")
     for _no, rec in packing.items():
-        art = engine.normalize(rec.get("article"))
-        if not art:
-            continue
+        art = _line_key(_no, rec)
         if art in by_art:
             target = by_art[art]
             for f in weight_fields:

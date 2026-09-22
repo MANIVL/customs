@@ -164,6 +164,36 @@ def is_summary_item(article: Any, name: Any) -> bool:
     return False
 
 
+_PLACEHOLDER_ARTICLES = frozenset({
+    "отсутствует", "отсутств", "нет", "нет артикула", "без артикула",
+    "не указан", "не указано", "н/д", "б/н", "бн", "б/а",
+    "n/a", "n.a.", "na", "none", "null", "nil", "-", "—", "–",
+    "absent", "no article", "no sku", "not available", "w/o", "wo",
+    "empty", "пусто", "xxx", "xxxx",
+})
+
+
+def is_placeholder_article(value: Any) -> bool:
+    """True when the article cell means «no SKU», not a real product code."""
+    s = normalize(value).strip(" .,:;\"'`«»")
+    if not s:
+        return True
+    if s in _PLACEHOLDER_ARTICLES:
+        return True
+    compact = s.replace(" ", "").replace(".", "")
+    return compact in {
+        "отсутствует", "нетартикула", "безартикула", "неуказан", "неуказано",
+        "noarticle", "nosku", "notavailable",
+    }
+
+
+def article_merge_key(value: Any) -> str:
+    """SKU used to merge rows across sheets; empty for missing/placeholder codes."""
+    if is_placeholder_article(value):
+        return ""
+    return normalize(value)
+
+
 def parse_date(text: str) -> datetime.datetime | None:
     try:
         return datetime.datetime.strptime(text.strip(), "%d.%m.%Y")
@@ -614,14 +644,15 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                     if found_u:
                         rec["unit"] = found_u
                 art = rec.get("article")
-                if art in (None, ""):
-                    continue
                 if is_summary_item(art, rec.get("name")):
                     continue
                 # Category section titles without qty
-                if rec.get("qty") in (None, "") and rec.get("price") in (None, "") and " " in str(art):
+                if rec.get("qty") in (None, "") and rec.get("price") in (None, "") and art and " " in str(art):
                     continue
-                key = normalize(art)
+                key = article_merge_key(art) or f"#{_no}"
+                if rec.get("name") in (None, "") and rec.get("qty") in (None, "") and rec.get("net_weight") in (None, ""):
+                    if not article_merge_key(art):
+                        continue
                 if key not in by_article:
                     by_article[key] = dict(rec)
                 else:
@@ -698,7 +729,7 @@ def merge_workbooks(items_list: list[dict[int, dict]]) -> dict[int, dict]:
     for items in items_list:
         for _no, rec in items.items():
             art = rec.get("article")
-            key = normalize(art) if art not in (None, "") else ""
+            key = article_merge_key(art)
             if key:
                 if key not in by_article:
                     by_article[key] = dict(rec)
