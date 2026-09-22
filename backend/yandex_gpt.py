@@ -17,7 +17,7 @@ COMPLETION_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1/completio
 
 
 def _load_dotenv() -> None:
-    """Load KEY=VALUE from desktop/.env if present (does not override existing env)."""
+    """Load KEY=VALUE from web/.env if present (does not override existing env)."""
     candidates = [
         Path(__file__).resolve().parent.parent / ".env",
         Path(__file__).resolve().parent / ".env",

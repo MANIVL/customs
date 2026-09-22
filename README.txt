@@ -16,12 +16,9 @@ Excel-файлов. Приложение можно запустить лока�
   .venv\Scripts\activate
   pip install -r requirements.txt
 
-Если рядом лежит папка python-runtime, можно запускать через run.bat
-без отдельной установки пакетов.
-
 Запуск
 ------
-Дважды кликните run.bat — или в терминале:
+В терминале:
 
   python main.py
 
