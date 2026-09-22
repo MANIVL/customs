@@ -28,7 +28,7 @@ import yandex_gpt
 
 from fastapi import FastAPI, UploadFile, File, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response, JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -162,7 +162,7 @@ _init_app_db()
 _init_template_storage()
 
 app = FastAPI(title="ТаможенФормат")
-APP_VERSION = "2026-09-21.4"
+APP_VERSION = "2026-09-22.1"
 
 
 def _public_error(exc: BaseException) -> str:
@@ -1134,28 +1134,16 @@ async def _resolve_template(template: UploadFile | None) -> bytes:
     raise FileNotFoundError("Шаблон не найден: загрузите эталонный файл")
 
 
-def _xlsx_result_response(result_bytes: bytes, report: dict) -> Response:
-    headers = {
-        "Content-Disposition": 'attachment; filename="result.xlsx"',
-        "X-Items-Found": str(report.get("items_found", 0)),
-        "X-AI-Mode": str(report.get("mode") or ""),
-        "Access-Control-Expose-Headers": "X-Items-Found, X-AI-Mode, X-Protocol",
-    }
-    protocol = report.get("protocol")
-    if protocol:
-        try:
-            encoded = base64.b64encode(
-                json.dumps(protocol, ensure_ascii=False).encode("utf-8")
-            ).decode("ascii")
-            # Proxies reject oversized response headers; keep protocol short.
-            if len(encoded) <= 3500:
-                headers["X-Protocol"] = encoded
-        except Exception:
-            traceback.print_exc()
-    return Response(
-        content=result_bytes,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers=headers,
+def _xlsx_result_response(result_bytes: bytes, report: dict) -> JSONResponse:
+    protocol = report.get("protocol") or {}
+    return JSONResponse(
+        {
+            "filename": "result.xlsx",
+            "items_found": report.get("items_found", 0),
+            "mode": report.get("mode") or "",
+            "protocol": protocol,
+            "file_b64": base64.b64encode(result_bytes).decode("ascii"),
+        }
     )
 
 

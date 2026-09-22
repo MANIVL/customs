@@ -1070,6 +1070,7 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
             except (TypeError, ValueError):
                 pass
 
+        rec["_src"] = engine.protocol_source_snap(plan.get("sheet") or ws.title, r, item_no, rec)
         items[item_no] = rec
         if len(items) >= MAX_EXTRACT_ROWS:
             break

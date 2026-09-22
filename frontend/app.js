@@ -20,6 +20,7 @@
   let inputFiles = []; // File[]
   let resultBlob = null;
   let resultObjectUrl = null;
+  let lastProtocol = null;
 
   // ---- Elements ----
   const el = {
@@ -39,6 +40,12 @@
     errorLog: document.getElementById('errorLog'),
     errorLogList: document.getElementById('errorLogList'),
     errorLogSummary: document.getElementById('errorLogSummary'),
+    compareOpenBtn: document.getElementById('compareOpenBtn'),
+    compareModal: document.getElementById('compareModal'),
+    compareCloseBtn: document.getElementById('compareCloseBtn'),
+    compareFinding: document.getElementById('compareFinding'),
+    compareSource: document.getElementById('compareSource'),
+    compareResult: document.getElementById('compareResult'),
     progressBar: document.getElementById('progressBar'),
     progressFill: document.getElementById('progressFill'),
     progressLabel: document.getElementById('progressLabel'),
@@ -79,6 +86,9 @@
       el.errorLogList.innerHTML = '';
       el.errorLogSummary.textContent = '';
     }
+    lastProtocol = null;
+    if (el.compareOpenBtn) el.compareOpenBtn.style.display = 'none';
+    closeCompare();
   }
 
   // ---- Template info ----
@@ -292,7 +302,7 @@
     el.progressBar.style.display = 'none';
   }
 
-  // log: { summary?: string, errors?: string[], warnings?: string[], notes?: string[], unknown?: string[] }
+  // log: { summary?, errors?, warnings?, notes?, findings?, compare? }
   function parseProtocol(res) {
     var b64 = res.headers.get('X-Protocol');
     if (!b64) return null;
@@ -302,6 +312,32 @@
     } catch (e) {
       return null;
     }
+  }
+
+  function b64ToBlob(b64, type) {
+    var bin = atob(b64);
+    var arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: type });
+  }
+
+  function readResultPayload(res) {
+    var ctype = (res.headers.get('content-type') || '').toLowerCase();
+    if (ctype.indexOf('json') >= 0) {
+      return res.json().then(function (data) {
+        if (data && data.error) throw new Error(data.error);
+        if (!data || !data.file_b64) throw new Error('Сервер не вернул файл');
+        return {
+          blob: b64ToBlob(data.file_b64, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'),
+          protocol: data.protocol || null,
+          filename: data.filename || 'result.xlsx',
+        };
+      });
+    }
+    var protocol = parseProtocol(res);
+    return res.blob().then(function (blob) {
+      return { blob: blob, protocol: protocol, filename: 'result.xlsx' };
+    });
   }
 
   function formatApiError(d, status) {
@@ -333,23 +369,37 @@
   function showErrorLog(log) {
     if (!el.errorLog) return;
     log = log || {};
+    lastProtocol = log;
 
     el.errorLogList.innerHTML = '';
 
-    const addEntry = (type, message) => {
+    const addEntry = (type, message, findingNo) => {
       const li = document.createElement('li');
       li.className = 'log-' + type;
       li.textContent = message;
+      if (findingNo != null) {
+        li.className += ' log-clickable';
+        li.title = 'Открыть сравнение по этой позиции';
+        li.addEventListener('click', function () { openCompare(findingNo); });
+      }
       el.errorLogList.appendChild(li);
     };
 
-    (log.errors || []).forEach((m) => addEntry('error', m));
-    (log.warnings || []).forEach((m) => addEntry('warning', m));
+    var findings = log.findings || [];
+    if (findings.length) {
+      findings.forEach(function (f) {
+        addEntry(f.severity === 'error' ? 'error' : 'warning', f.message || '', f.no);
+      });
+    } else {
+      (log.errors || []).forEach((m) => addEntry('error', m));
+      (log.warnings || []).forEach((m) => addEntry('warning', m));
+    }
     (log.unknown || []).forEach((m) => addEntry('unknown', m));
     (log.notes || []).forEach((m) => addEntry('note', m));
 
-    const hasErrors = (log.errors || []).length > 0;
-    const hasWarnings = (log.warnings || []).length > 0 || (log.unknown || []).length > 0;
+    const hasErrors = (log.errors || []).length > 0 || findings.some(function (f) { return f.severity === 'error'; });
+    const hasWarnings = (log.warnings || []).length > 0 || (log.unknown || []).length > 0
+      || findings.some(function (f) { return f.severity !== 'error'; });
     el.errorLog.classList.toggle('has-errors', hasErrors);
     el.errorLog.classList.toggle('has-issues', hasWarnings && !hasErrors);
 
@@ -363,7 +413,94 @@
       el.errorLogSummary.textContent = 'Ошибок не обнаружено, файл обработан корректно.';
     }
 
+    var canCompare = !!(log.compare && (log.compare.rows || []).length);
+    if (el.compareOpenBtn) {
+      el.compareOpenBtn.style.display = canCompare ? 'inline-flex' : 'none';
+    }
+
     el.errorLog.style.display = 'block';
+  }
+
+  function closeCompare() {
+    if (el.compareModal) el.compareModal.hidden = true;
+  }
+
+  function _cellText(v) {
+    if (v == null || v === '') return '';
+    return String(v);
+  }
+
+  function _srcCaption(src) {
+    if (!src || !src.sheet) return '';
+    var t = 'Лист «' + src.sheet + '»';
+    if (src.row) t += ', строка ' + src.row;
+    return t;
+  }
+
+  function renderCompareTables(focusNo) {
+    var cmp = (lastProtocol && lastProtocol.compare) || {};
+    var fields = cmp.fields || ['article', 'name', 'qty', 'price', 'amount', 'net_weight', 'gross_weight'];
+    var labels = cmp.labels || {};
+    var rows = cmp.rows || [];
+    var findings = (lastProtocol && lastProtocol.findings) || [];
+    var issueByNo = {};
+    findings.forEach(function (f) {
+      if (f.no == null) return;
+      if (!issueByNo[f.no]) issueByNo[f.no] = [];
+      if (f.field && issueByNo[f.no].indexOf(f.field) < 0) issueByNo[f.no].push(f.field);
+    });
+
+    function tableHtml(side) {
+      var html = '<table class="compare-table"><thead><tr><th>№</th>';
+      fields.forEach(function (f) {
+        html += '<th>' + (labels[f] || f) + '</th>';
+      });
+      html += '</tr></thead><tbody>';
+      rows.forEach(function (row) {
+        var src = row.source || {};
+        var data = side === 'source' ? src : (row.result || {});
+        if (side === 'source' && !(src.article || src.name || src.qty != null || src.price != null)) {
+          data = row.source_pack || src;
+        }
+        var hits = issueByNo[row.no] || row.issues || [];
+        var trClass = (focusNo != null && row.no === focusNo) || (hits.length && focusNo == null) ? ' is-hit' : '';
+        html += '<tr class="' + trClass.trim() + '" data-no="' + row.no + '">';
+        html += '<td>' + row.no;
+        if (side === 'source') {
+          var cap = _srcCaption(data.sheet ? data : row.source_pack);
+          if (cap) html += '<span class="compare-src-meta">' + cap + '</span>';
+        }
+        html += '</td>';
+        fields.forEach(function (f) {
+          var hit = hits.indexOf(f) >= 0 ? ' cell-hit' : '';
+          html += '<td class="' + hit.trim() + '">' + _cellText(data[f]) + '</td>';
+        });
+        html += '</tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+
+    if (el.compareSource) el.compareSource.innerHTML = tableHtml('source');
+    if (el.compareResult) el.compareResult.innerHTML = tableHtml('result');
+
+    var focusMsg = '';
+    if (focusNo != null) {
+      var f = findings.filter(function (x) { return x.no === focusNo; });
+      focusMsg = f.map(function (x) { return x.message; }).join(' · ');
+    }
+    if (el.compareFinding) el.compareFinding.textContent = focusMsg;
+
+    var hit = el.compareResult && el.compareResult.querySelector('tr.is-hit');
+    if (hit && hit.scrollIntoView) hit.scrollIntoView({ block: 'center' });
+    var hitL = el.compareSource && el.compareSource.querySelector('tr.is-hit');
+    if (hitL && hitL.scrollIntoView) hitL.scrollIntoView({ block: 'center' });
+  }
+
+  function openCompare(focusNo) {
+    if (!lastProtocol || !lastProtocol.compare) return;
+    if (el.compareModal) el.compareModal.hidden = false;
+    renderCompareTables(focusNo);
   }
 
   // ---- Только выгрузка файла, без предпросмотра ----
@@ -397,12 +534,11 @@
         throw new Error(formatApiError(data, res.status) || 'Ошибка формирования файла');
       }
 
-      const protocol = parseProtocol(res);
-      const blob = await res.blob();
-      const filename = 'result.xlsx';
-      showResult(blob, filename);
-      triggerDownload(blob, filename);
-      showErrorLog(protocol);
+      const payload = await readResultPayload(res);
+      const filename = payload.filename || 'result.xlsx';
+      showResult(payload.blob, filename);
+      triggerDownload(payload.blob, filename);
+      showErrorLog(payload.protocol);
     } catch (e) {
       if (progressTimer) clearInterval(progressTimer);
       showError('Не удалось скачать файл: ' + e.message);
@@ -769,14 +905,11 @@
           clearInterval(progressTimer);
           setProgress(100);
           if (!res.ok) return readErrorBody(res);
-          var protocol = parseProtocol(res);
-          return res.blob().then(function (blob) {
-            return { blob: blob, protocol: protocol };
-          });
+          return readResultPayload(res);
         })
         .then(function (payload) {
-          triggerDownload(payload.blob, 'result.xlsx');
-          showResult(payload.blob, 'result.xlsx');
+          triggerDownload(payload.blob, payload.filename || 'result.xlsx');
+          showResult(payload.blob, payload.filename || 'result.xlsx');
           showErrorLog(payload.protocol);
         })
         .catch(function (e) {
@@ -796,5 +929,20 @@
   }
 
   // ---- Инициализация ----
+  if (el.compareOpenBtn) {
+    el.compareOpenBtn.addEventListener('click', function () { openCompare(null); });
+  }
+  if (el.compareCloseBtn) {
+    el.compareCloseBtn.addEventListener('click', closeCompare);
+  }
+  if (el.compareModal) {
+    el.compareModal.addEventListener('click', function (e) {
+      if (e.target === el.compareModal) closeCompare();
+    });
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeCompare();
+  });
+
   loadTemplateInfo();
 })();

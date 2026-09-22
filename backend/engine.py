@@ -653,6 +653,7 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                 if rec.get("name") in (None, "") and rec.get("qty") in (None, "") and rec.get("net_weight") in (None, ""):
                     if not article_merge_key(art):
                         continue
+                rec["_src"] = protocol_source_snap(t.sheet_name, row, _no, rec)
                 if key not in by_article:
                     by_article[key] = dict(rec)
                 else:
@@ -682,6 +683,8 @@ def extract_items_from_workbook(wb) -> dict[int, dict]:
                 if rec.get(f) not in (None, ""):
                     invoice[key][f] = rec[f]
             merge_missing(invoice[key], rec, CERT_FIELDS + ["name", "country", "unit", "manufacturer", "marks"])
+            if rec.get("_src") and not invoice[key].get("_src_pack"):
+                invoice[key]["_src_pack"] = rec["_src"]
         else:
             invoice[key] = dict(rec)
             order.append(key)
@@ -960,19 +963,95 @@ def _protocol_num(val: Any) -> float | None:
         return None
 
 
-def _protocol_arts(recs: list[dict], limit: int = 5) -> str:
-    arts = []
-    for rec in recs:
-        art = rec.get("article")
-        if art not in (None, ""):
-            arts.append(str(art).strip())
-    if not arts:
+PROTOCOL_FIELDS = (
+    "article", "name", "qty", "price", "amount",
+    "net_weight", "gross_weight", "cll", "country", "unit", "tariff_code",
+)
+
+FIELD_RU = {
+    "article": "Артикул",
+    "name": "Наименование",
+    "qty": "Количество",
+    "price": "Цена",
+    "amount": "Сумма",
+    "net_weight": "Нетто",
+    "gross_weight": "Брутто",
+    "cll": "Места",
+    "country": "Страна",
+    "unit": "Ед. изм.",
+    "tariff_code": "Код ТН ВЭД",
+}
+
+
+def _proto_scalar(val: Any):
+    if val in (None, ""):
+        return None
+    if isinstance(val, datetime.datetime):
+        return val.strftime("%d.%m.%Y")
+    if isinstance(val, datetime.date):
+        return val.strftime("%d.%m.%Y")
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            return None
+        if val.is_integer():
+            return int(val)
+        return round(val, 4)
+    s = str(val).replace("\n", " ").strip()
+    return s[:220] if s else None
+
+
+def protocol_source_snap(sheet: str, row: int, no: int, rec: dict) -> dict:
+    snap: dict[str, Any] = {"sheet": sheet, "row": int(row), "no": int(no)}
+    for k in PROTOCOL_FIELDS:
+        v = _proto_scalar(rec.get(k))
+        if v is not None:
+            snap[k] = v
+    return snap
+
+
+def _result_snap(no: int, rec: dict) -> dict:
+    snap: dict[str, Any] = {"no": int(no)}
+    for k in PROTOCOL_FIELDS:
+        v = _proto_scalar(rec.get(k))
+        if v is not None:
+            snap[k] = v
+    for src_key in ("_src", "_src_pack"):
+        src = rec.get(src_key)
+        if isinstance(src, dict):
+            clean = {k: src[k] for k in src if k in ("sheet", "row", "no", *PROTOCOL_FIELDS)}
+            if clean:
+                snap[src_key] = clean
+    return snap
+
+
+def _pos_label(no: int, rec: dict) -> str:
+    art = str(rec.get("article") or "").strip()
+    if is_placeholder_article(art):
+        art = ""
+    name = str(rec.get("name") or "").replace("\n", " ").strip()
+    if len(name) > 42:
+        name = name[:42].rstrip() + "…"
+    parts = [f"№ {no}"]
+    if art:
+        parts.append(f"артикул {art}")
+    if name:
+        parts.append(f"«{name}»")
+    return ", ".join(parts)
+
+
+def _fmt_pos_list(pairs: list[tuple[int, dict]], limit: int = 8) -> str:
+    if not pairs:
         return ""
-    shown = arts[:limit]
-    extra = len(arts) - len(shown)
-    text = ", ".join(shown)
+    nos = [no for no, _ in pairs]
+    if len(nos) > 3 and nos == list(range(nos[0], nos[0] + len(nos))):
+        return f"№ {nos[0]}–{nos[-1]}"
+    labels = [_pos_label(no, rec) for no, rec in pairs[:limit]]
+    extra = len(pairs) - len(labels)
+    text = "; ".join(labels)
     if extra > 0:
-        text += f" и ещё {extra}"
+        text += f"; и ещё {extra}"
     return text
 
 
@@ -993,10 +1072,11 @@ def build_fill_protocol(
     mappings: list[dict] | None = None,
     mode: str | None = None,
 ) -> dict:
-    """Short human-readable protocol: what is missing or looks misplaced."""
+    """Protocol: summary lines plus per-position findings for the compare UI."""
     errors: list[str] = []
     warnings: list[str] = []
     notes: list[str] = []
+    findings: list[dict] = []
     n = len(items)
     if n == 0:
         errors.append("Не найдено ни одной товарной позиции — шаблон не заполнен.")
@@ -1005,80 +1085,105 @@ def build_fill_protocol(
             "errors": errors,
             "warnings": warnings,
             "notes": notes,
+            "findings": [],
+            "compare": {"fields": list(PROTOCOL_FIELDS), "labels": FIELD_RU, "rows": []},
             "items_found": 0,
         }
 
-    recs = [items[k] for k in sorted(items)]
+    numbered = [(k, items[k]) for k in sorted(items)]
 
-    no_art = [r for r in recs if _protocol_empty(r.get("article"))]
+    def add_finding(
+        pairs: list[tuple[int, dict]],
+        *,
+        severity: str,
+        code: str,
+        field: str,
+        message: str,
+        extra: dict | None = None,
+    ) -> None:
+        for no, rec in pairs[:24]:
+            item = {
+                "severity": severity,
+                "code": code,
+                "no": no,
+                "field": field,
+                "message": f"{_pos_label(no, rec)}: {message}",
+                "result": _result_snap(no, rec),
+                "source": rec.get("_src") if isinstance(rec.get("_src"), dict) else {},
+                "source_pack": rec.get("_src_pack") if isinstance(rec.get("_src_pack"), dict) else {},
+            }
+            if extra:
+                item.update(extra)
+            findings.append(item)
+
+    placeholders = [(no, r) for no, r in numbered if is_placeholder_article(r.get("article")) and not _protocol_empty(r.get("article"))]
+    if placeholders:
+        notes.append(
+            "В исходнике нет SKU (артикул «ОТСУТСТВУЕТ» / n/a): "
+            + _fmt_pos_list(placeholders)
+            + ". Строки не склеивались по артикулу."
+        )
+
+    no_art = [(no, r) for no, r in numbered if _protocol_empty(r.get("article"))]
     if no_art:
-        errors.append(f"Без артикула: {_ru_positions(len(no_art))}.")
+        msg = "нет артикула — в шаблоне пустая ячейка"
+        errors.append("Без артикула: " + _fmt_pos_list(no_art) + ".")
+        add_finding(no_art, severity="error", code="no_article", field="article", message=msg)
 
-    no_name = [r for r in recs if _protocol_empty(r.get("name"))]
+    no_name = [(no, r) for no, r in numbered if _protocol_empty(r.get("name"))]
     if no_name:
-        sample = _protocol_arts(no_name)
-        warnings.append(
-            "Без наименования: "
-            + _ru_positions(len(no_name))
-            + (f" ({sample})" if sample else "")
-            + "."
-        )
+        msg = "не перенесено наименование"
+        warnings.append("Без наименования: " + _fmt_pos_list(no_name) + ".")
+        add_finding(no_name, severity="warning", code="no_name", field="name", message=msg)
 
-    no_qty = [r for r in recs if _protocol_num(r.get("qty")) is None]
+    no_qty = [(no, r) for no, r in numbered if _protocol_num(r.get("qty")) is None]
     if no_qty:
-        sample = _protocol_arts(no_qty)
-        warnings.append(
-            "Не перенесено количество: "
-            + _ru_positions(len(no_qty))
-            + (f" ({sample})" if sample else "")
-            + "."
-        )
+        msg = "не перенесено количество"
+        warnings.append("Не перенесено количество: " + _fmt_pos_list(no_qty) + ".")
+        add_finding(no_qty, severity="warning", code="no_qty", field="qty", message=msg)
 
-    priced = [r for r in recs if _protocol_num(r.get("price")) is not None or _protocol_num(r.get("amount")) is not None]
-    weighed = [
-        r for r in recs
+    priced = {id(r) for _no, r in numbered if _protocol_num(r.get("price")) is not None or _protocol_num(r.get("amount")) is not None}
+    weighed = {
+        id(r) for _no, r in numbered
         if _protocol_num(r.get("net_weight")) is not None or _protocol_num(r.get("gross_weight")) is not None
-    ]
+    }
     only_pack = [
-        r for r in recs
-        if r not in priced
+        (no, r) for no, r in numbered
+        if id(r) not in priced
         and (
             _protocol_num(r.get("net_weight")) is not None
             or _protocol_num(r.get("gross_weight")) is not None
             or _protocol_num(r.get("cll")) is not None
         )
     ]
-    only_inv = [r for r in priced if r not in weighed]
+    only_inv = [(no, r) for no, r in numbered if id(r) in priced and id(r) not in weighed]
     if only_pack and priced:
-        sample = _protocol_arts(only_pack)
-        warnings.append(
-            "Есть только в упаковочном листе (веса без цены): "
-            + _ru_positions(len(only_pack))
-            + (f" — {sample}" if sample else "")
-            + ". Артикулы не совпали с инвойсом."
-        )
+        msg = "есть вес, нет цены — похоже, строка только из упаковочного листа (артикул не совпал с инвойсом)"
+        warnings.append("Только в упаковочном листе (веса без цены): " + _fmt_pos_list(only_pack) + ".")
+        add_finding(only_pack, severity="warning", code="packing_only", field="price", message=msg)
     if only_inv and weighed:
-        sample = _protocol_arts(only_inv)
-        warnings.append(
-            "Позиции инвойса без веса нетто/брутто: "
-            + _ru_positions(len(only_inv))
-            + (f" — {sample}" if sample else "")
-            + "."
-        )
+        msg = "есть цена, нет веса нетто/брутто"
+        warnings.append("Инвойс без веса нетто/брутто: " + _fmt_pos_list(only_inv) + ".")
+        add_finding(only_inv, severity="warning", code="no_weight", field="net_weight", message=msg)
 
-    no_country = [r for r in recs if _protocol_empty(r.get("country"))]
+    no_country = [(no, r) for no, r in numbered if _protocol_empty(r.get("country"))]
     if no_country:
-        warnings.append(f"Без страны происхождения: {_ru_positions(len(no_country))}.")
+        msg = "не перенесена страна происхождения"
+        warnings.append("Без страны происхождения: " + _fmt_pos_list(no_country) + ".")
+        add_finding(no_country, severity="warning", code="no_country", field="country", message=msg)
 
-    no_unit = [r for r in recs if _protocol_empty(r.get("unit"))]
+    no_unit = [(no, r) for no, r in numbered if _protocol_empty(r.get("unit"))]
     if no_unit:
-        warnings.append(f"Без единицы измерения: {_ru_positions(len(no_unit))}.")
+        msg = "не перенесена единица измерения"
+        warnings.append("Без единицы измерения: " + _fmt_pos_list(no_unit) + ".")
+        add_finding(no_unit, severity="warning", code="no_unit", field="unit", message=msg)
 
-    mismatch = []
-    swapped = []
-    heavy_net = []
-    order_arts = []
-    for rec in recs:
+    mismatch: list[tuple[int, dict]] = []
+    swapped: list[tuple[int, dict]] = []
+    heavy_net: list[tuple[int, dict]] = []
+    order_arts: list[tuple[int, dict]] = []
+    mismatch_extra: dict[int, dict] = {}
+    for no, rec in numbered:
         art = str(rec.get("article") or "").strip()
         qty = _protocol_num(rec.get("qty"))
         price = _protocol_num(rec.get("price"))
@@ -1089,7 +1194,8 @@ def build_fill_protocol(
             expected = qty * price
             tol = max(0.05, abs(amount) * 0.015)
             if abs(expected - amount) > tol:
-                mismatch.append(art or "?")
+                mismatch.append((no, rec))
+                mismatch_extra[no] = {"expected": round(expected, 4), "actual": amount}
         if (
             qty is not None
             and price is not None
@@ -1097,53 +1203,45 @@ def build_fill_protocol(
             and float(price).is_integer()
             and abs(qty) >= 1
         ):
-            swapped.append(art or "?")
+            swapped.append((no, rec))
         if net is not None and gross is not None and net > gross + 0.05:
-            heavy_net.append(art or "?")
+            heavy_net.append((no, rec))
         if re.match(r"(?i)^order[_\-\s]", art) or re.match(r"(?i)^po[_\-\s/#]", art):
-            order_arts.append(art)
+            order_arts.append((no, rec))
 
     if mismatch:
-        warnings.append(
-            "Сумма строки не равна количество × цена: "
-            + _protocol_arts([{"article": a} for a in mismatch])
-            + ". Возможно, перепутаны столбцы."
-        )
+        warnings.append("Сумма строки ≠ количество × цена: " + _fmt_pos_list(mismatch) + ".")
+        for no, rec in mismatch[:24]:
+            extra = mismatch_extra.get(no) or {}
+            expected = extra.get("expected")
+            actual = extra.get("actual")
+            q = _protocol_num(rec.get("qty"))
+            p = _protocol_num(rec.get("price"))
+            msg = f"сумма {actual} не равна {q} × {p} = {expected} — возможно, перепутаны столбцы"
+            add_finding([(no, rec)], severity="warning", code="qty_price_amount", field="amount", message=msg, extra=extra)
     if swapped:
-        warnings.append(
-            "Количество похоже на цену (дробное qty, целая цена): "
-            + _protocol_arts([{"article": a} for a in swapped])
-            + "."
+        warnings.append("Количество похоже на цену (дробное qty, целая цена): " + _fmt_pos_list(swapped) + ".")
+        add_finding(
+            swapped, severity="warning", code="qty_price_swap", field="qty",
+            message="количество дробное, цена целая — возможно, столбцы qty/price перепутаны",
         )
     if heavy_net:
-        warnings.append(
-            "Нетто больше брутто: "
-            + _protocol_arts([{"article": a} for a in heavy_net])
-            + "."
-        )
+        warnings.append("Нетто больше брутто: " + _fmt_pos_list(heavy_net) + ".")
+        add_finding(heavy_net, severity="warning", code="net_gt_gross", field="net_weight", message="нетто больше брутто")
     if order_arts:
-        warnings.append(
-            "В артикул попал номер заказа, а не SKU: "
-            + _protocol_arts([{"article": a} for a in order_arts])
-            + "."
-        )
+        warnings.append("В артикул попал номер заказа, а не SKU: " + _fmt_pos_list(order_arts) + ".")
+        add_finding(order_arts, severity="warning", code="order_as_article", field="article", message="похоже на номер заказа (PO/Order), а не SKU")
 
-    seen: dict[str, int] = {}
-    dupes: list[str] = []
-    for rec in recs:
-        key = normalize(rec.get("article"))
+    seen: dict[str, list[tuple[int, dict]]] = {}
+    for no, rec in numbered:
+        key = article_merge_key(rec.get("article"))
         if not key:
             continue
-        seen[key] = seen.get(key, 0) + 1
-    for key, cnt in seen.items():
-        if cnt > 1:
-            dupes.append(key)
+        seen.setdefault(key, []).append((no, rec))
+    dupes = [pair for pairs in seen.values() if len(pairs) > 1 for pair in pairs]
     if dupes:
-        warnings.append(
-            "Повторяющиеся артикулы в результате: "
-            + _protocol_arts([{"article": a} for a in dupes])
-            + "."
-        )
+        warnings.append("Повторяющиеся артикулы в результате: " + _fmt_pos_list(dupes) + ".")
+        add_finding(dupes, severity="warning", code="dup_article", field="article", message="артикул повторяется в результате")
 
     if mode == "keyword_fallback":
         warnings.append("ИИ недоступен или не ответил — файл собран по заголовкам, без модели.")
@@ -1157,14 +1255,33 @@ def build_fill_protocol(
         if err:
             warnings.append(f"Лист «{plan.get('sheet') or '?'}»: {err}")
 
-    warnings = warnings[:12]
-    errors = errors[:8]
+    warnings = warnings[:16]
+    errors = errors[:10]
+    findings = findings[:40]
+
+    flagged = {int(f["no"]) for f in findings if f.get("no") is not None}
+    compare_rows = []
+    for no, rec in numbered:
+        if no not in flagged and len(compare_rows) >= 60 and n > 60:
+            continue
+        issues = [f["field"] for f in findings if f.get("no") == no]
+        src = rec.get("_src") if isinstance(rec.get("_src"), dict) else {}
+        src_pack = rec.get("_src_pack") if isinstance(rec.get("_src_pack"), dict) else {}
+        compare_rows.append({
+            "no": no,
+            "issues": issues,
+            "source": src,
+            "source_pack": src_pack,
+            "result": {k: _proto_scalar(rec.get(k)) for k in PROTOCOL_FIELDS if rec.get(k) not in (None, "")},
+        })
+        if len(compare_rows) >= 80:
+            break
 
     summary = f"В шаблон перенесено {_ru_positions(n)}."
     if errors:
-        summary += " Есть ошибки — проверьте протокол."
+        summary += " Есть ошибки — откройте протокол и сравнение."
     elif warnings:
-        summary += " Есть замечания: часть данных не перенесена или выглядит подозрительно."
+        summary += " Есть замечания по конкретным позициям — откройте сравнение."
     else:
         summary += " Критичных замечаний нет."
 
@@ -1173,6 +1290,12 @@ def build_fill_protocol(
         "errors": errors,
         "warnings": warnings,
         "notes": notes,
+        "findings": findings,
+        "compare": {
+            "fields": list(PROTOCOL_FIELDS),
+            "labels": FIELD_RU,
+            "rows": compare_rows,
+        },
         "items_found": n,
     }
 

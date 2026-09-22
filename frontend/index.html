@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260921.2" />
+  <link rel="stylesheet" href="style.css?v=20260922.1" />
 </head>
 <body>
   <header class="topbar">
@@ -151,6 +151,9 @@
             <h3>Протокол обработки</h3>
             <div id="errorLogSummary" class="error-log-summary"></div>
             <ul id="errorLogList"></ul>
+            <div class="protocol-actions">
+              <button id="compareOpenBtn" type="button" class="btn btn-ghost" style="display:none;">Сравнить исходный файл и результат</button>
+            </div>
           </div>
         </article>
       </section>
@@ -242,12 +245,32 @@
     </div>
   </main>
 
+  <div id="compareModal" class="compare-modal" hidden>
+    <div class="compare-dialog" role="dialog" aria-modal="true" aria-labelledby="compareTitle">
+      <header class="compare-head">
+        <h3 id="compareTitle">Сравнение: исходный документ и результат</h3>
+        <button id="compareCloseBtn" type="button" class="btn btn-ghost">Закрыть</button>
+      </header>
+      <p id="compareFinding" class="compare-finding"></p>
+      <div class="compare-cols">
+        <section class="compare-pane">
+          <h4>Исходный документ</h4>
+          <div id="compareSource" class="compare-table-wrap"></div>
+        </section>
+        <section class="compare-pane">
+          <h4>Результат в шаблоне</h4>
+          <div id="compareResult" class="compare-table-wrap"></div>
+        </section>
+      </div>
+    </div>
+  </div>
+
   <footer>
     <div class="wrap">
       ТаможенФормат · Веб‑версия
     </div>
   </footer>
 
-  <script src="app.js?v=20260921.3"></script>
+  <script src="app.js?v=20260922.1"></script>
 </body>
 </html>
