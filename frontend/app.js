@@ -789,6 +789,28 @@
     syncFilterAll();
   }
 
+  function selectFilterMatches() {
+    var needle = (filterEl.search.value || '').trim().toLowerCase();
+    filterValues.forEach(function (value) {
+      var caption = value === '' ? '(Пустые)' : value;
+      filterDraft[value] = !needle || caption.toLowerCase().indexOf(needle) !== -1;
+    });
+    renderFilterList();
+  }
+
+  function commitColumnFilter() {
+    if (!filterField) return;
+    var checked = filterValues.filter(function (value) { return filterDraft[value]; });
+    if (!checked.length) {
+      articleState.filters[filterField] = [];
+    } else if (checked.length === filterValues.length) {
+      delete articleState.filters[filterField];
+    } else {
+      articleState.filters[filterField] = checked;
+    }
+    closeColumnFilter();
+  }
+
   function openColumnFilter(btn) {
     var field = btn.dataset.field;
     if (filterField === field && filterEl.box && !filterEl.box.hidden) {
@@ -855,8 +877,22 @@
       openColumnFilter(btn);
     });
   });
+  var resetFiltersBtn = document.getElementById('articleResetFilters');
+  if (resetFiltersBtn) {
+    resetFiltersBtn.addEventListener('click', function () {
+      articleState.filters = {};
+      closeColumnFilter();
+      loadArticles(1);
+    });
+  }
   if (filterEl.search) {
-    filterEl.search.addEventListener('input', renderFilterList);
+    filterEl.search.addEventListener('input', selectFilterMatches);
+    filterEl.search.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      commitColumnFilter();
+      loadArticles(1);
+    });
   }
   if (filterEl.all) {
     filterEl.all.addEventListener('change', function () {
@@ -869,13 +905,7 @@
   }
   if (filterEl.ok) {
     filterEl.ok.addEventListener('click', function () {
-      var checked = filterValues.filter(function (value) { return filterDraft[value]; });
-      if (!filterValues.length || checked.length === filterValues.length) {
-        delete articleState.filters[filterField];
-      } else {
-        articleState.filters[filterField] = checked;
-      }
-      closeColumnFilter();
+      commitColumnFilter();
       loadArticles(1);
     });
   }
@@ -891,6 +921,7 @@
 
   if (articleEl.searchBtn) {
     articleEl.searchBtn.addEventListener('click', function () {
+      if (filterField) commitColumnFilter();
       articleState.q = (articleEl.search.value || '').trim();
       loadArticles(1);
     });

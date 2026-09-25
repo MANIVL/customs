@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260925.8" />
+  <link rel="stylesheet" href="style.css?v=20260925.10" />
 </head>
 <body>
   <header class="topbar">
@@ -210,7 +210,7 @@
                   <th><span class="article-th"><span>Марка</span><button type="button" class="article-filter-btn" data-field="brand" aria-label="Фильтр: Марка"></button></span></th>
                   <th><span class="article-th"><span>Модель</span><button type="button" class="article-filter-btn" data-field="model" aria-label="Фильтр: Модель"></button></span></th>
                   <th><span class="article-th"><span>Доп. код</span><button type="button" class="article-filter-btn" data-field="extra_code" aria-label="Фильтр: Доп. код"></button></span></th>
-                  <th></th>
+                  <th><button id="articleResetFilters" type="button" class="btn btn-ghost article-reset-btn">Сбросить все фильтры</button></th>
                 </tr>
               </thead>
               <tbody id="articleRows"></tbody>
@@ -237,7 +237,7 @@
             <label class="article-filter-all"><input id="articleFilterAll" type="checkbox" /> (Выделить все)</label>
             <div id="articleFilterList" class="article-filter-list"></div>
             <div class="article-filter-actions">
-              <button id="articleFilterOk" type="button" class="btn btn-primary">ОК</button>
+              <button id="articleFilterOk" type="button" class="btn btn-primary">Найти</button>
               <button id="articleFilterCancel" type="button" class="btn btn-ghost">Отмена</button>
             </div>
           </div>
@@ -275,6 +275,6 @@
     </div>
   </footer>
 
-  <script src="app.js?v=20260925.8"></script>
+  <script src="app.js?v=20260925.10"></script>
 </body>
 </html>

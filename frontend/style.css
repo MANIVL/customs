@@ -410,15 +410,15 @@ body.catalog-wide .topbar-inner {
   table-layout: fixed;
 }
 .article-table .col-article { width: 8%; }
-.article-table .col-description { width: 13%; }
+.article-table .col-description { width: 11%; }
 .article-table .col-origin { width: 11%; }
 .article-table .col-hs { width: 8%; }
-.article-table .col-group { width: 15%; }
+.article-table .col-group { width: 13%; }
 .article-table .col-manufacturer { width: 13%; }
 .article-table .col-brand { width: 9%; }
 .article-table .col-model { width: 8%; }
 .article-table .col-extra { width: 8%; }
-.article-table .col-action { width: 7%; }
+.article-table .col-action { width: 11%; }
 .article-table th,
 .article-table td {
   padding: 8px 10px;
@@ -444,6 +444,12 @@ body.catalog-wide .topbar-inner {
   top: 0;
   background: var(--color-surface-offset, var(--color-surface));
   white-space: normal;
+}
+.article-reset-btn {
+  font-size: 12px;
+  line-height: 1.3;
+  white-space: normal;
+  padding: 4px 6px;
 }
 .article-th {
   display: flex;
