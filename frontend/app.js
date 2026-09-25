@@ -573,303 +573,219 @@
         tab.classList.add('active');
         var targetEl = document.getElementById('tab-' + target);
         if (targetEl) targetEl.classList.add('active');
+        document.body.classList.toggle('catalog-wide', target === 'articles');
       });
     });
   })();
 
-  // ---- SVH Search ----
-  var svhEl = {
-    address: document.getElementById('svhAddress'),
-    name: document.getElementById('svhName'),
-    customs: document.getElementById('svhCustoms'),
-    license: document.getElementById('svhLicense'),
-    transport: document.getElementById('svhTransport'),
-    searchBtn: document.getElementById('svhSearchBtn'),
-    clearBtn: document.getElementById('svhClearBtn'),
-    errorBox: document.getElementById('svhErrorBox'),
-    resultsCard: document.getElementById('svhResultsCard'),
-    resultsCount: document.getElementById('svhResultsCount'),
-    resultsSource: document.getElementById('svhResultsSource'),
-    loading: document.getElementById('svhLoading'),
-    resultsList: document.getElementById('svhResultsList'),
-    pagination: document.getElementById('svhPagination'),
+  // ---- Article catalog ----
+  var articleState = { q: '', page: 1, pages: 1, fields: [] };
+  var articleEditingId = null;
+
+  var articleEl = {
+    search: document.getElementById('articleSearch'),
+    searchBtn: document.getElementById('articleSearchBtn'),
+    addBtn: document.getElementById('articleAddBtn'),
+    error: document.getElementById('articleError'),
+    meta: document.getElementById('articleMeta'),
+    rows: document.getElementById('articleRows'),
+    pager: document.getElementById('articlePager'),
+    modal: document.getElementById('articleModal'),
+    form: document.getElementById('articleForm'),
+    title: document.getElementById('articleFormTitle'),
+    fields: document.getElementById('articleFields'),
+    formError: document.getElementById('articleFormError'),
+    cancel: document.getElementById('articleCancelBtn'),
   };
 
-  var svhState = {
-    allResults: [],
-    currentPage: 1,
-    perPage: 20,
-    total: 0,
-  };
-
-  function showSvhError(msg) {
-    svhEl.errorBox.textContent = msg;
-    svhEl.errorBox.style.display = 'block';
-  }
-  function clearSvhError() {
-    svhEl.errorBox.style.display = 'none';
-    svhEl.errorBox.textContent = '';
+  function showArticleError(msg) {
+    if (!articleEl.error) return;
+    articleEl.error.textContent = msg;
+    articleEl.error.style.display = 'block';
   }
 
-  function fmtDateShort(iso) {
-    if (!iso) return '';
-    try {
-      var d = new Date(iso);
-      return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    } catch (e) { return iso; }
+  function clearArticleError() {
+    if (!articleEl.error) return;
+    articleEl.error.style.display = 'none';
+    articleEl.error.textContent = '';
   }
 
-  function escapeHtml(str) {
-    if (!str) return '';
-    var div = document.createElement('div');
-    div.appendChild(document.createTextNode(str));
-    return div.innerHTML;
-  }
-
-  function renderSvhCard(card) {
-    var div = document.createElement('div');
-    div.className = 'svh-card';
-
-    var typeHtml = '';
-    if (card.type) {
-      typeHtml = '<span class="svh-card-type">' + escapeHtml(card.type) + '</span>';
-    }
-
-    var fieldsHtml = '';
-    var fields = [
-      ['Адрес', card.address],
-      ['Лицензия', card.license],
-      ['Таможня', card.customs],
-      ['Транспорт', card.transport],
-      ['Телефон', card.phone],
-      ['Email', card.email],
-      ['ИНН', card.inn],
-    ];
-    fields.forEach(function (f) {
-      if (f[1]) {
-        var val = f[1];
-        if (f[0] === 'Email') {
-          val = '<a href="mailto:' + escapeHtml(f[1]) + '">' + escapeHtml(f[1]) + '</a>';
-        } else if (f[0] === 'Телефон') {
-          val = '<a href="tel:' + escapeHtml(f[1]) + '">' + escapeHtml(f[1]) + '</a>';
-        } else {
-          val = escapeHtml(f[1]);
-        }
-        fieldsHtml += '<div class="svh-card-field"><span class="svh-card-label">' + escapeHtml(f[0]) + ':</span><span class="svh-card-value">' + val + '</span></div>';
-      }
+  function renderArticleForm(item) {
+    articleEl.fields.innerHTML = '';
+    (articleState.fields.length ? articleState.fields : [
+      { key: 'article', label: 'Артикул' },
+      { key: 'description', label: 'Описание товара' },
+      { key: 'origin_code', label: 'Код страны происхождения' },
+      { key: 'hs_code', label: 'Код товара' },
+      { key: 'group_description', label: 'Описание группы' },
+      { key: 'manufacturer', label: 'Наименование фирмы-изготовителя' },
+      { key: 'brand', label: 'Марка' },
+      { key: 'model', label: 'Модель' },
+      { key: 'extra_code', label: 'Код по классификатору дополнительной таможенной информации' },
+    ]).forEach(function (field) {
+      var wrap = document.createElement('label');
+      wrap.className = 'article-field';
+      var caption = document.createElement('span');
+      caption.textContent = field.label;
+      var longText = field.key === 'description' || field.key === 'group_description';
+      if (longText || field.key === 'extra_code') wrap.classList.add('article-field-wide');
+      var input = document.createElement(longText ? 'textarea' : 'input');
+      input.name = field.key;
+      input.value = item && item[field.key] ? item[field.key] : '';
+      if (field.key === 'article') input.required = true;
+      wrap.appendChild(caption);
+      wrap.appendChild(input);
+      articleEl.fields.appendChild(wrap);
     });
-
-    var urlHtml = '';
-    if (card.url) {
-      urlHtml = '<a href="' + escapeHtml(card.url) + '" target="_blank" rel="noopener">Страница на alta.ru →</a>';
-    }
-
-    div.innerHTML =
-      '<div class="svh-card-header">' +
-        '<div class="svh-card-title">' + escapeHtml(card.name) + '</div>' +
-        typeHtml +
-      '</div>' +
-      '<div class="svh-card-grid">' + fieldsHtml + '</div>' +
-      (urlHtml ? '<div class="svh-card-actions">' + urlHtml + '</div>' : '');
-
-    return div;
   }
 
-  function renderSvhResults() {
-    svhEl.resultsList.innerHTML = '';
-    var start = (svhState.currentPage - 1) * svhState.perPage;
-    var end = start + svhState.perPage;
-    var pageItems = svhState.allResults.slice(start, end);
-
-    pageItems.forEach(function (card) {
-      svhEl.resultsList.appendChild(renderSvhCard(card));
-    });
-
-    svhEl.resultsCount.textContent = 'Найдено: ' + svhState.allResults.length;
-    svhEl.resultsSource.textContent = '';
-    svhEl.loading.style.display = 'none';
+  function showFormError(msg) {
+    if (!articleEl.formError) return;
+    articleEl.formError.textContent = msg;
+    articleEl.formError.style.display = 'block';
   }
 
-  function renderPagination() {
-    svhEl.pagination.innerHTML = '';
-    if (svhState.totalPages <= 1) return;
-
-    var total = svhState.totalPages;
-    var current = svhState.currentPage;
-
-    // Previous
-    var prevBtn = document.createElement('button');
-    prevBtn.className = 'svh-page-btn';
-    prevBtn.textContent = '← Назад';
-    prevBtn.disabled = current <= 1;
-    prevBtn.addEventListener('click', function () {
-      svhState.currentPage = current - 1;
-      renderSvhResults();
-      renderPagination();
-      svhEl.resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    svhEl.pagination.appendChild(prevBtn);
-
-    // Page numbers
-    var range = 3;
-    var from = Math.max(1, current - range);
-    var to = Math.min(total, current + range);
-    for (var i = from; i <= to; i++) {
-      var btn = document.createElement('button');
-      btn.className = 'svh-page-btn' + (i === current ? ' active' : '');
-      btn.textContent = i;
-      (function (p) {
-        btn.addEventListener('click', function () {
-          svhState.currentPage = p;
-          renderSvhResults();
-          renderPagination();
-          svhEl.resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        });
-      })(i);
-      svhEl.pagination.appendChild(btn);
-    }
-
-    // Next
-    var nextBtn = document.createElement('button');
-    nextBtn.className = 'svh-page-btn';
-    nextBtn.textContent = 'Вперёд →';
-    nextBtn.disabled = current >= total;
-    nextBtn.addEventListener('click', function () {
-      svhState.currentPage = current + 1;
-      renderSvhResults();
-      renderPagination();
-      svhEl.resultsCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
-    svhEl.pagination.appendChild(nextBtn);
-
-    svhEl.pagination.style.display = 'flex';
+  function clearFormError() {
+    if (!articleEl.formError) return;
+    articleEl.formError.style.display = 'none';
+    articleEl.formError.textContent = '';
   }
 
-  function doSvhSearch() {
-    clearSvhError();
-    svhEl.resultsCard.hidden = true;
-    svhEl.resultsList.innerHTML = '';
-    svhEl.pagination.innerHTML = '';
-    svhEl.pagination.style.display = 'none';
+  function openArticleForm(item) {
+    clearFormError();
+    articleEditingId = item && item.id ? item.id : null;
+    articleEl.title.textContent = articleEditingId ? 'Изменить артикул' : 'Новый артикул';
+    renderArticleForm(item);
+    articleEl.modal.hidden = false;
+  }
 
-    var address = (svhEl.address ? svhEl.address.value : '').trim();
-    var name = (svhEl.name ? svhEl.name.value : '').trim();
-    var customs = (svhEl.customs ? svhEl.customs.value : '').trim();
-    var license = (svhEl.license ? svhEl.license.value : '').trim();
-    var transport = (svhEl.transport ? svhEl.transport.value : '');
+  function closeArticleForm() {
+    articleEl.modal.hidden = true;
+    articleEditingId = null;
+  }
 
-    if (!address && !name && !customs && !license && !transport) {
-      showSvhError('Укажите хотя бы один параметр поиска');
-      return;
-    }
-
-    var params = new URLSearchParams();
-    if (address) params.set('s_adres', address);
-    if (name) params.set('s_name', name);
-    if (customs) params.set('s_tam', customs);
-    if (license) params.set('s_nlic', license);
-    if (transport) params.set('s_vidtrans', transport);
-
-    var url = API + '/api/svh/search?' + params.toString();
-    svhEl.loading.style.display = 'flex';
-    if (svhEl.searchBtn) svhEl.searchBtn.disabled = true;
-
-    function requestOnce() {
-      var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
-      var timer = null;
-      if (controller) {
-        timer = setTimeout(function () { controller.abort(); }, 55000);
-      }
-      return fetch(url, controller ? { signal: controller.signal, cache: 'no-store' } : { cache: 'no-store' })
-        .then(function (res) {
-          return res.text().then(function (text) {
-            var data;
-            try {
-              data = text ? JSON.parse(text) : {};
-            } catch (parseErr) {
-              var err = new Error(
-                res.status >= 500
-                  ? 'Сервер не успел получить ответ от Alta.ru (таймаут). Повторите через полминуты.'
-                  : 'Некорректный ответ сервера'
-              );
-              err.retryable = res.status >= 500 || res.status === 0;
-              throw err;
-            }
-            data._httpStatus = res.status;
-            if (res.status >= 500 && data.error) {
-              var e2 = new Error(data.error);
-              e2.retryable = true;
-              throw e2;
-            }
-            return data;
-          });
-        })
-        .finally(function () {
-          if (timer) clearTimeout(timer);
-        });
-    }
-
-    requestOnce()
-      .catch(function (e) {
-        if (e && (e.name === 'AbortError' || e.retryable)) {
-          return new Promise(function (resolve) { setTimeout(resolve, 2500); }).then(requestOnce);
-        }
-        throw e;
-      })
-      .then(function (data) {
-        if (data.error) {
-          showSvhError(data.error);
-          return;
-        }
-        svhState.allResults = data.results || [];
-        svhState.total = data.count || svhState.allResults.length;
-        svhState.totalPages = Math.max(1, Math.ceil(svhState.total / svhState.perPage));
-        svhState.currentPage = 1;
-        svhEl.resultsCard.hidden = false;
-        renderSvhResults();
-        renderPagination();
-        if (data.warning) {
-          showSvhError(data.warning);
-        }
-        if (svhState.total === 0) {
-          showSvhError('По заданным параметрам ничего не найдено. Уточните запрос.');
-        }
-      })
-      .catch(function (e) {
-        var msg = e && e.name === 'AbortError'
-          ? 'Поиск превысил время ожидания. Повторите через 15–30 секунд.'
-          : ('Ошибка при поиске: ' + (e && e.message ? e.message : e));
-        showSvhError(msg);
-      })
-      .finally(function () {
-        svhEl.loading.style.display = 'none';
-        if (svhEl.searchBtn) svhEl.searchBtn.disabled = false;
+  function renderArticleTable(data) {
+    articleState.fields = data.fields || articleState.fields;
+    articleState.pages = data.pages || 1;
+    articleEl.rows.innerHTML = '';
+    (data.items || []).forEach(function (item) {
+      var tr = document.createElement('tr');
+      [item.article, item.description, item.origin_code, item.hs_code, item.group_description, item.manufacturer, item.brand, item.model, item.extra_code].forEach(function (value) {
+        var td = document.createElement('td');
+        td.textContent = value || '';
+        tr.appendChild(td);
       });
+      var action = document.createElement('td');
+      var btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-ghost';
+      btn.textContent = 'Изменить';
+      btn.addEventListener('click', function () { openArticleForm(item); });
+      action.appendChild(btn);
+      tr.appendChild(action);
+      articleEl.rows.appendChild(tr);
+    });
+    if (!(data.items || []).length) {
+      var empty = document.createElement('tr');
+      var td = document.createElement('td');
+      td.colSpan = 10;
+      td.textContent = 'Ничего не найдено.';
+      empty.appendChild(td);
+      articleEl.rows.appendChild(empty);
+    }
+    articleEl.meta.textContent = 'Записей: ' + (data.total || 0);
+    articleEl.pager.innerHTML = '';
+    if ((data.pages || 1) > 1) {
+      var prev = document.createElement('button');
+      prev.type = 'button';
+      prev.className = 'btn btn-ghost';
+      prev.textContent = 'Назад';
+      prev.disabled = articleState.page <= 1;
+      prev.addEventListener('click', function () { loadArticles(articleState.page - 1); });
+      var next = document.createElement('button');
+      next.type = 'button';
+      next.className = 'btn btn-ghost';
+      next.textContent = 'Дальше';
+      next.disabled = articleState.page >= data.pages;
+      next.addEventListener('click', function () { loadArticles(articleState.page + 1); });
+      var label = document.createElement('span');
+      label.textContent = articleState.page + ' / ' + data.pages;
+      articleEl.pager.appendChild(prev);
+      articleEl.pager.appendChild(label);
+      articleEl.pager.appendChild(next);
+    }
   }
 
-  svhEl.searchBtn.addEventListener('click', function () {
-    doSvhSearch();
-  });
+  function loadArticles(page) {
+    articleState.page = page || 1;
+    clearArticleError();
+    var params = new URLSearchParams();
+    if (articleState.q) params.set('q', articleState.q);
+    params.set('page', String(articleState.page));
+    params.set('per_page', '40');
+    fetch(API + '/api/articles?' + params.toString())
+      .then(function (res) {
+        if (!res.ok) return readErrorBody(res);
+        return res.json();
+      })
+      .then(function (data) { renderArticleTable(data); })
+      .catch(function (e) { showArticleError(e.message || String(e)); });
+  }
 
-  // Enter key triggers search
-  [svhEl.address, svhEl.name, svhEl.customs, svhEl.license].forEach(function (input) {
-    if (!input) return;
-    input.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') { e.preventDefault(); doSvhSearch(); }
+  if (articleEl.searchBtn) {
+    articleEl.searchBtn.addEventListener('click', function () {
+      articleState.q = (articleEl.search.value || '').trim();
+      loadArticles(1);
     });
-  });
-
-  svhEl.clearBtn.addEventListener('click', function () {
-    svhEl.address.value = '';
-    svhEl.name.value = '';
-    svhEl.customs.value = '';
-    svhEl.license.value = '';
-    svhEl.transport.value = '';
-    clearSvhError();
-    svhEl.resultsCard.hidden = true;
-    svhEl.resultsList.innerHTML = '';
-    svhEl.pagination.innerHTML = '';
-    svhState.allResults = [];
+  }
+  if (articleEl.search) {
+    articleEl.search.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        articleState.q = articleEl.search.value.trim();
+        loadArticles(1);
+      }
+    });
+  }
+  if (articleEl.addBtn) {
+    articleEl.addBtn.addEventListener('click', function () { openArticleForm(null); });
+  }
+  if (articleEl.cancel) {
+    articleEl.cancel.addEventListener('click', closeArticleForm);
+  }
+  if (articleEl.modal) {
+    articleEl.modal.addEventListener('click', function (e) {
+      if (e.target === articleEl.modal) closeArticleForm();
+    });
+  }
+  if (articleEl.form) {
+    articleEl.form.addEventListener('submit', function (e) {
+      e.preventDefault();
+      clearFormError();
+      var payload = {};
+      articleEl.fields.querySelectorAll('input, textarea').forEach(function (input) {
+        payload[input.name] = input.value;
+      });
+      var url = articleEditingId ? (API + '/api/articles/' + articleEditingId) : (API + '/api/articles');
+      fetch(url, {
+        method: articleEditingId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        if (!res.ok) return readErrorBody(res);
+        return res.json();
+      }).then(function () {
+        closeArticleForm();
+        loadArticles(articleState.page);
+      }).catch(function (err) {
+        showFormError(err.message || String(err));
+      });
+    });
+  }
+  document.querySelectorAll('.tab').forEach(function (tab) {
+    tab.addEventListener('click', function () {
+      if (tab.dataset.tab === 'articles') loadArticles(articleState.page || 1);
+    });
   });
 
   // ---- AI Analyze (YandexGPT column mapping) ----

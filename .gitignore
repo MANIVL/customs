@@ -4,9 +4,9 @@ __pycache__/
 venv/
 .env
 backend/data/current_template.xlsx
-backend/data/svh_cache.db
 backend/data/app_state.db
-backend/data/svh_debug.html
+backend/data/articles.db
+backend/data/articles.db-*
 backend/data/_ai_debug*
 *.xlsx
 !backend/data/default_template.xlsx

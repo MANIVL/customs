@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 .venv/
 .git/
+backend/data/articles.db
+backend/data/app_state.db

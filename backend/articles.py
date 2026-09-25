@@ -1,0 +1,258 @@
+"""Article catalog seeded from the VPR workbook and edited in the web UI."""
+from __future__ import annotations
+
+import os
+import sqlite3
+import datetime
+from typing import Any
+
+import xlrd
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+BUNDLE_DATA_DIR = os.path.join(BASE_DIR, "data")
+DATA_DIR = os.environ.get("DATA_DIR") or BUNDLE_DATA_DIR
+DB_PATH = os.path.join(DATA_DIR, "articles.db")
+SOURCE_XLS = os.path.join(BUNDLE_DATA_DIR, "articles_source.xls")
+
+# (field, Russian label, header needles in priority order)
+FIELDS: list[tuple[str, str, tuple[str, ...]]] = [
+    ("article", "Артикул", ("артикул",)),
+    ("description", "Описание товара", ("описание товара",)),
+    ("origin_code", "Код страны происхождения", ("код страны происхождения",)),
+    ("hs_code", "Код товара", ("код товара",)),
+    ("group_description", "Описание группы", ("описание группы",)),
+    ("manufacturer", "Наименование фирмы-изготовителя", ("фирмы-изготовителя", "изготовителя")),
+    ("brand", "Марка", ("марка",)),
+    ("model", "Модель", ("модель",)),
+    (
+        "extra_code",
+        "Код по классификатору дополнительной таможенной информации",
+        ("дополнительной таможенной", "классификатору"),
+    ),
+]
+FIELD_KEYS = [key for key, _label, _needles in FIELDS]
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _connect() -> sqlite3.Connection:
+    os.makedirs(DATA_DIR, exist_ok=True)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def _init_schema(db: sqlite3.Connection) -> None:
+    columns = ",\n".join(f"{key} TEXT NOT NULL DEFAULT ''" for key in FIELD_KEYS if key != "article")
+    db.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS articles (
+            id INTEGER PRIMARY KEY,
+            article TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            {columns},
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    db.execute("CREATE INDEX IF NOT EXISTS articles_article_idx ON articles(article)")
+    columns = {row[1] for row in db.execute("PRAGMA table_info(articles)")}
+    if "trademark_note" in columns:
+        db.execute("ALTER TABLE articles DROP COLUMN trademark_note")
+
+
+def _cell_text(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, float):
+        if value.is_integer():
+            return str(int(value))
+        return str(value).strip()
+    return str(value).strip()
+
+
+def _norm_header(value: Any) -> str:
+    return " ".join(_cell_text(value).lower().split())
+
+
+def _find_sheet(book: xlrd.book.Book):
+    for name in book.sheet_names():
+        if "ОСНОВНАЯ" in name.upper():
+            return book.sheet_by_name(name)
+    return book.sheet_by_index(0)
+
+
+def _header_map(sheet) -> tuple[int, dict[str, int]]:
+    for row_idx in range(min(8, sheet.nrows)):
+        headers = [_norm_header(sheet.cell_value(row_idx, col)) for col in range(sheet.ncols)]
+        if not any("артикул" == text or text.startswith("артикул") for text in headers):
+            continue
+        mapping: dict[str, int] = {}
+        for key, _label, needles in FIELDS:
+            for col, text in enumerate(headers):
+                if not text or col in mapping.values():
+                    continue
+                if any(needle in text for needle in needles):
+                    # «код товара» must not take the additional-classifier column
+                    if key == "hs_code" and "классификатор" in text:
+                        continue
+                    mapping[key] = col
+                    break
+        if "article" in mapping and "description" in mapping:
+            return row_idx, mapping
+    raise ValueError("В файле не найдена вкладка с колонками артикула и описания товара")
+
+
+def _load_source_rows() -> list[dict[str, str]]:
+    if not os.path.isfile(SOURCE_XLS):
+        return []
+    book = xlrd.open_workbook(SOURCE_XLS)
+    sheet = _find_sheet(book)
+    header_row, mapping = _header_map(sheet)
+    by_article: dict[str, dict[str, str]] = {}
+    for row_idx in range(header_row + 1, sheet.nrows):
+        record = {key: "" for key in FIELD_KEYS}
+        for key, col in mapping.items():
+            record[key] = _cell_text(sheet.cell_value(row_idx, col))
+        article = record["article"]
+        if not article:
+            continue
+        by_article[article.casefold()] = record
+    return list(by_article.values())
+
+
+def _seed_if_empty(db: sqlite3.Connection) -> None:
+    count = db.execute("SELECT COUNT(*) AS c FROM articles").fetchone()["c"]
+    if count:
+        return
+    rows = _load_source_rows()
+    if not rows:
+        return
+    stamp = _now()
+    placeholders = ", ".join("?" for _ in FIELD_KEYS)
+    columns = ", ".join(FIELD_KEYS)
+    db.executemany(
+        f"INSERT INTO articles ({columns}, updated_at) VALUES ({placeholders}, ?)",
+        [tuple(row[key] for key in FIELD_KEYS) + (stamp,) for row in rows],
+    )
+
+
+def init() -> None:
+    with _connect() as db:
+        _init_schema(db)
+        _seed_if_empty(db)
+        db.commit()
+
+
+def field_meta() -> list[dict[str, str]]:
+    return [{"key": key, "label": label} for key, label, _needles in FIELDS]
+
+
+def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
+    data = {"id": row["id"], "updated_at": row["updated_at"]}
+    for key in FIELD_KEYS:
+        data[key] = row[key] or ""
+    return data
+
+
+def _clean_payload(payload: dict[str, Any], *, require_article: bool) -> dict[str, str]:
+    if not isinstance(payload, dict):
+        raise ValueError("Ожидается объект с полями артикула")
+    cleaned = {key: str(payload.get(key) or "").strip() for key in FIELD_KEYS}
+    if require_article and not cleaned["article"]:
+        raise ValueError("Укажите артикул")
+    if len(cleaned["article"]) > 200:
+        raise ValueError("Артикул слишком длинный")
+    return cleaned
+
+
+def _find_conflict(db: sqlite3.Connection, article: str, exclude_id: int | None) -> sqlite3.Row | None:
+    if exclude_id is None:
+        return db.execute(
+            "SELECT id FROM articles WHERE article = ? COLLATE NOCASE",
+            (article,),
+        ).fetchone()
+    return db.execute(
+        "SELECT id FROM articles WHERE article = ? COLLATE NOCASE AND id != ?",
+        (article, exclude_id),
+    ).fetchone()
+
+
+def search(query: str, page: int, per_page: int) -> dict[str, Any]:
+    page = max(1, page)
+    per_page = min(max(1, per_page), 200)
+    text = (query or "").strip()
+    where = ""
+    params: list[Any] = []
+    if text:
+        like = f"%{text.replace('%', '').replace('_', '')}%"
+        clauses = " OR ".join(f"{key} LIKE ? COLLATE NOCASE" for key in FIELD_KEYS)
+        where = f"WHERE {clauses}"
+        params = [like] * len(FIELD_KEYS)
+    with _connect() as db:
+        total = db.execute(f"SELECT COUNT(*) AS c FROM articles {where}", params).fetchone()["c"]
+        rows = db.execute(
+            f"""
+            SELECT * FROM articles
+            {where}
+            ORDER BY article COLLATE NOCASE
+            LIMIT ? OFFSET ?
+            """,
+            [*params, per_page, (page - 1) * per_page],
+        ).fetchall()
+    return {
+        "fields": field_meta(),
+        "items": [_row_dict(row) for row in rows],
+        "total": total,
+        "page": page,
+        "per_page": per_page,
+        "pages": max(1, (total + per_page - 1) // per_page) if total else 1,
+    }
+
+
+def get_article(article_id: int) -> dict[str, Any] | None:
+    with _connect() as db:
+        row = db.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()
+    return _row_dict(row) if row else None
+
+
+def create_article(payload: dict[str, Any]) -> dict[str, Any]:
+    cleaned = _clean_payload(payload, require_article=True)
+    with _connect() as db:
+        if _find_conflict(db, cleaned["article"], None):
+            raise ValueError("Такой артикул уже есть в базе")
+        cur = db.execute(
+            f"INSERT INTO articles ({', '.join(FIELD_KEYS)}, updated_at) VALUES ({', '.join('?' for _ in FIELD_KEYS)}, ?)",
+            tuple(cleaned[key] for key in FIELD_KEYS) + (_now(),),
+        )
+        db.commit()
+        article_id = int(cur.lastrowid)
+    created = get_article(article_id)
+    if created is None:
+        raise RuntimeError("Не удалось сохранить артикул")
+    return created
+
+
+def update_article(article_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+    cleaned = _clean_payload(payload, require_article=True)
+    with _connect() as db:
+        existing = db.execute("SELECT id FROM articles WHERE id = ?", (article_id,)).fetchone()
+        if not existing:
+            raise LookupError("Артикул не найден")
+        if _find_conflict(db, cleaned["article"], article_id):
+            raise ValueError("Такой артикул уже есть в базе")
+        assignments = ", ".join(f"{key} = ?" for key in FIELD_KEYS)
+        db.execute(
+            f"UPDATE articles SET {assignments}, updated_at = ? WHERE id = ?",
+            tuple(cleaned[key] for key in FIELD_KEYS) + (_now(), article_id),
+        )
+        db.commit()
+    updated = get_article(article_id)
+    if updated is None:
+        raise RuntimeError("Не удалось сохранить артикул")
+    return updated
+
+
+init()

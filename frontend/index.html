@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260922.1" />
+  <link rel="stylesheet" href="style.css?v=20260925.3" />
 </head>
 <body>
   <header class="topbar">
@@ -25,7 +25,7 @@
       <!-- Tabs -->
       <div class="tabs">
         <button class="tab active" data-tab="process" type="button">Обработка файлов</button>
-        <button class="tab" data-tab="svh" type="button">Поиск СВХ</button>
+        <button class="tab" data-tab="articles" type="button">Артикулы</button>
       </div>
 
       <!-- Tab: Process -->
@@ -160,88 +160,66 @@
       </div>
       <!-- /tab-process -->
 
-      <!-- Tab: SVH Search -->
-      <div class="tab-content" id="tab-svh">
+      <!-- Tab: Articles -->
+      <div class="tab-content" id="tab-articles">
       <section class="hero">
-        <h1>Поиск складов временного хранения (СВХ)</h1>
+        <h1>База артикулов</h1>
         <p>
-          Реестр СВХ и ТС с сайта alta.ru. Ищите по адресу, названию, таможне, номеру лицензии или виду транспорта.
+          Справочник из основной таблицы: артикул, описание, страна, код товара,
+          изготовитель, марка и модель. Записи можно добавлять и править.
         </p>
       </section>
 
       <section class="steps">
-        <!-- Поиск -->
         <article class="card">
           <div class="card-head">
             <div class="step-num">1</div>
-            <h2>Параметры поиска</h2>
+            <h2>Поиск и правки</h2>
           </div>
-          <p class="card-desc">
-            Укажите хотя бы один параметр. Поля можно комбинировать для точного поиска.
-          </p>
-
-          <div class="svh-search-grid">
-            <div class="field">
-              <label for="svhAddress">Адрес</label>
-              <input id="svhAddress" type="text" placeholder="напр. Внуково" />
-            </div>
-            <div class="field">
-              <label for="svhName">Название</label>
-              <input id="svhName" type="text" placeholder="напр. ГБС" />
-            </div>
-            <div class="field">
-              <label for="svhCustoms">Таможня</label>
-              <input id="svhCustoms" type="text" placeholder="напр. 10001000" />
-            </div>
-            <div class="field">
-              <label for="svhLicense">№ лицензии</label>
-              <input id="svhLicense" type="text" placeholder="напр. 10001/070223" />
-            </div>
-            <div class="field">
-              <label for="svhTransport">Вид транспорта</label>
-              <select id="svhTransport">
-                <option value="">Любой</option>
-                <option value="Автодорожный">Автодорожный</option>
-                <option value="Железнодорожный">Железнодорожный</option>
-                <option value="Воздушный">Воздушный</option>
-                <option value="Морской">Морской</option>
-              </select>
-            </div>
+          <div class="article-toolbar">
+            <input id="articleSearch" type="search" placeholder="Артикул, описание, изготовитель, марка…" />
+            <button id="articleSearchBtn" type="button" class="btn btn-primary">Найти</button>
+            <button id="articleAddBtn" type="button" class="btn btn-ghost">Добавить артикул</button>
           </div>
-
-          <div class="actions-row" style="margin-top:12px;">
-            <button id="svhSearchBtn" type="button" class="btn btn-primary">Найти</button>
-            <button id="svhClearBtn" type="button" class="btn btn-ghost">Очистить</button>
+          <div id="articleError" class="error-box" style="display:none;"></div>
+          <div class="article-meta" id="articleMeta">Загрузка…</div>
+          <div class="article-table-wrap">
+            <table class="article-table">
+              <colgroup>
+                <col class="col-article" />
+                <col class="col-description" />
+                <col class="col-origin" />
+                <col class="col-hs" />
+                <col class="col-group" />
+                <col class="col-manufacturer" />
+                <col class="col-brand" />
+                <col class="col-model" />
+                <col class="col-extra" />
+                <col class="col-action" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th>Артикул</th>
+                  <th>Описание товара</th>
+                  <th>Страна</th>
+                  <th>Код товара</th>
+                  <th>Описание группы</th>
+                  <th>Изготовитель</th>
+                  <th>Марка</th>
+                  <th>Модель</th>
+                  <th>Код по классификатору дополнительной таможенной информации</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="articleRows"></tbody>
+            </table>
           </div>
-
-          <div id="svhErrorBox" class="error-box" style="display:none;"></div>
-        </article>
-
-        <!-- Результаты -->
-        <article class="card" id="svhResultsCard" hidden>
-          <div class="card-head">
-            <div class="step-num">2</div>
-            <h2>Результаты поиска</h2>
-          </div>
-
-          <div class="svh-results-header">
-            <span id="svhResultsCount">Найдено: 0</span>
-            <span id="svhResultsSource" class="svh-source"></span>
-          </div>
-
-          <div id="svhLoading" class="svh-loading" style="display:none;">
-            <div class="svh-spinner"></div>
-            <span>Загрузка из реестра…</span>
-          </div>
-
-          <div id="svhResultsList" class="svh-results-list"></div>
-
-          <!-- Pagination -->
-          <div id="svhPagination" class="svh-pagination" style="display:none;"></div>
+          <div id="articlePager" class="article-pager"></div>
         </article>
       </section>
       </div>
-      <!-- /tab-svh -->
+      <!-- /tab-articles -->
+
     </div>
   </main>
 
@@ -265,12 +243,26 @@
     </div>
   </div>
 
+      <div id="articleModal" class="compare-modal" hidden>
+        <form id="articleForm" class="compare-dialog article-dialog">
+          <header class="compare-head">
+            <h3 id="articleFormTitle">Артикул</h3>
+            <button id="articleCancelBtn" type="button" class="btn btn-ghost">Закрыть</button>
+          </header>
+          <div id="articleFields" class="article-fields"></div>
+          <div id="articleFormError" class="error-box" style="display:none;"></div>
+          <div class="article-form-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+          </div>
+        </form>
+      </div>
+
   <footer>
     <div class="wrap">
       ТаможенФормат · Веб‑версия
     </div>
   </footer>
 
-  <script src="app.js?v=20260922.1"></script>
+  <script src="app.js?v=20260925.3"></script>
 </body>
 </html>

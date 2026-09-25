@@ -377,194 +377,112 @@ footer {
   display: block;
 }
 
-/* === Сетка поиска СВХ === */
-.svh-search-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-@media (max-width: 600px) {
-  .svh-search-grid { grid-template-columns: 1fr; }
-}
-.svh-search-grid .field:last-child {
-  grid-column: 1 / -1;
-}
-
-/* === Результаты СВХ === */
-.svh-results-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 8px 0;
-  font-size: 13px;
-  color: var(--color-text-muted);
-  border-bottom: 1px solid var(--color-border);
-  margin-bottom: 12px;
-}
-.svh-source {
-  font-size: 11px;
-  opacity: 0.7;
-}
-
-/* Спиннер загрузки */
-.svh-loading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 24px;
-  justify-content: center;
-  color: var(--color-text-muted);
-  font-size: 14px;
-}
-.svh-spinner {
-  width: 24px;
-  height: 24px;
-  border: 3px solid var(--color-border);
-  border-top-color: var(--color-primary);
-  border-radius: 50%;
-  animation: svh-spin 0.8s linear infinite;
-}
-@keyframes svh-spin {
-  to { transform: rotate(360deg); }
-}
-
-/* Карточки результатов */
-.svh-results-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.svh-card {
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: 14px 16px;
-  background: var(--color-surface-offset);
-  transition: 0.15s ease;
-}
-.svh-card:hover {
-  border-color: var(--color-primary);
-  box-shadow: 0 2px 12px rgba(15, 91, 82, 0.1);
-}
-
-.svh-card-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-}
-.svh-card-title {
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 1.4;
-}
-.svh-card-type {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--color-primary-highlight);
-  color: var(--color-primary);
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-
-.svh-card-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px 16px;
-  font-size: 12px;
-}
-@media (max-width: 500px) {
-  .svh-card-grid { grid-template-columns: 1fr; }
-}
-.svh-card-field {
-  display: flex;
-  gap: 6px;
-}
-.svh-card-label {
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-.svh-card-value {
-  color: var(--color-text);
-  word-break: break-word;
-}
-.svh-card-value a {
-  color: var(--color-primary);
-  text-decoration: none;
-}
-.svh-card-value a:hover {
-  text-decoration: underline;
-}
-
-.svh-card-actions {
+/* === База артикулов === */
+.article-toolbar {
   display: flex;
   gap: 8px;
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--color-border);
+  flex-wrap: wrap;
+  align-items: center;
 }
-.svh-card-actions .btn {
-  font-size: 12px;
-  padding: 5px 10px;
+.article-toolbar input {
+  flex: 1 1 240px;
+  min-width: 0;
 }
-
-/* Детальная карточка */
-.svh-detail-box {
+.article-meta {
   margin-top: 12px;
-  padding: 14px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
   font-size: 13px;
+  color: var(--color-text-muted, var(--color-text));
 }
-.svh-detail-box[hidden] { display: none; }
-.svh-detail-box h4 {
-  font-size: 14px;
-  margin-bottom: 10px;
-  color: var(--color-primary);
+body.catalog-wide .wrap,
+body.catalog-wide .topbar-inner {
+  max-width: none;
 }
-.svh-detail-grid {
+.article-table-wrap {
+  margin-top: 10px;
+  overflow: visible;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+}
+.article-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  table-layout: fixed;
+}
+.article-table .col-article { width: 8%; }
+.article-table .col-description { width: 16%; }
+.article-table .col-origin { width: 5%; }
+.article-table .col-hs { width: 8%; }
+.article-table .col-group { width: 15%; }
+.article-table .col-manufacturer { width: 13%; }
+.article-table .col-brand { width: 9%; }
+.article-table .col-model { width: 8%; }
+.article-table .col-extra { width: 11%; }
+.article-table .col-action { width: 7%; }
+.article-table th,
+.article-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--color-divider, var(--color-border));
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.article-table th {
+  position: sticky;
+  top: 0;
+  background: var(--color-surface-offset, var(--color-surface));
+  white-space: normal;
+}
+.article-pager {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+.article-dialog {
+  width: min(1440px, calc(100vw - 48px));
+  max-height: none;
+  align-self: center;
+  overflow: visible;
+}
+.article-fields {
+  overflow: visible;
+  padding: 12px 16px 4px;
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 20px;
+  gap: 12px 20px;
 }
-@media (max-width: 500px) {
-  .svh-detail-grid { grid-template-columns: 1fr; }
+.article-field-wide {
+  grid-column: 1 / -1;
 }
-
-/* Пагинация */
-.svh-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 16px 0 4px;
-  flex-wrap: wrap;
+.article-field {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
 }
-.svh-page-btn {
-  padding: 6px 12px;
+.article-toolbar input,
+.article-field input,
+.article-field textarea {
+  width: 100%;
+  padding: 8px 10px;
   border: 1px solid var(--color-border);
   border-radius: 6px;
-  background: var(--color-surface-2);
-  color: var(--color-text);
+  background: var(--color-surface);
   font-size: 13px;
-  cursor: pointer;
-  transition: 0.15s ease;
+  box-sizing: border-box;
 }
-.svh-page-btn:hover {
-  border-color: var(--color-primary);
-  background: var(--color-primary-highlight);
+.article-toolbar input { width: auto; }
+.article-field input:focus,
+.article-field textarea:focus,
+.article-toolbar input:focus { border-color: var(--color-primary); }
+.article-field textarea {
+  min-height: 72px;
+  resize: vertical;
 }
-.svh-page-btn.active {
-  background: var(--color-primary);
-  color: #fff;
-  border-color: var(--color-primary);
-}
-.svh-page-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.article-form-actions {
+  padding: 12px 16px 16px;
 }
 
 /* === AI Chat === */
