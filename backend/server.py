@@ -6,11 +6,14 @@ Serves both the API and the static frontend from a single process.
 import os
 import sys
 import json
+import time
 import base64
 import shutil
+import threading
 import traceback
 import datetime
 import sqlite3
+import urllib.request
 from pathlib import Path
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -155,6 +158,75 @@ _init_app_db()
 _init_template_storage()
 
 app = FastAPI(title="ТаможенФормат")
+
+
+def _sync_base() -> str:
+    if os.environ.get("RENDER_EXTERNAL_URL"):
+        return ""
+    return os.environ.get("ARTICLES_SYNC_URL", "").strip().rstrip("/")
+
+
+def _pull_public_articles() -> dict[str, int]:
+    base = _sync_base()
+    if not base:
+        return {"inserted": 0, "updated": 0}
+    page = 1
+    items: list = []
+    while True:
+        url = f"{base}/api/articles?page={page}&per_page=200"
+        with urllib.request.urlopen(url, timeout=60) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+        items.extend(payload.get("items") or [])
+        if page >= int(payload.get("pages") or 1):
+            break
+        page += 1
+    return articles.apply_remote(items)
+
+
+def _push_articles(items: list) -> dict[str, int]:
+    base = _sync_base()
+    if not base or not items:
+        return {"inserted": 0, "updated": 0}
+    request = urllib.request.Request(
+        base + "/api/articles/sync",
+        data=json.dumps({"items": items}).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return {
+        "inserted": int(payload.get("inserted") or 0),
+        "updated": int(payload.get("updated") or 0),
+    }
+
+
+def _article_sync_loop() -> None:
+    base = _sync_base()
+    if not base:
+        return
+    print(f"Синхронизация артикулов с {base}", flush=True)
+    while True:
+        try:
+            pushed = _push_articles(articles.export_all())
+            pulled = _pull_public_articles()
+            if any((pushed["inserted"], pushed["updated"], pulled["inserted"], pulled["updated"])):
+                print(
+                    "База артикулов синхронизирована: "
+                    f"на сайт новых {pushed['inserted']}, изменённых {pushed['updated']}; "
+                    f"локально новых {pulled['inserted']}, изменённых {pulled['updated']}",
+                    flush=True,
+                )
+        except Exception:
+            traceback.print_exc()
+        time.sleep(30)
+
+
+@app.on_event("startup")
+def _start_article_sync() -> None:
+    threading.Thread(target=_article_sync_loop, name="article-sync", daemon=True).start()
+
+
 APP_VERSION = "2026-09-22.1"
 
 
@@ -326,6 +398,17 @@ async def article_values(request: Request):
     return {"values": values}
 
 
+@app.post("/api/articles/sync")
+async def sync_articles(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict) or not isinstance(body.get("items"), list):
+        return JSONResponse({"error": "Ожидается список артикулов"}, status_code=422)
+    try:
+        return articles.apply_remote(body["items"])
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+
+
 @app.get("/api/articles/{article_id}")
 def get_article(article_id: int):
     row = articles.get_article(article_id)
@@ -337,19 +420,23 @@ def get_article(article_id: int):
 @app.post("/api/articles")
 async def create_article(request: Request):
     try:
-        return articles.create_article(await request.json())
+        saved = articles.create_article(await request.json())
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    threading.Thread(target=_push_articles, args=([saved],), daemon=True).start()
+    return saved
 
 
 @app.put("/api/articles/{article_id}")
 async def update_article(article_id: int, request: Request):
     try:
-        return articles.update_article(article_id, await request.json())
+        saved = articles.update_article(article_id, await request.json())
     except LookupError as e:
         return JSONResponse({"error": str(e)}, status_code=404)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+    threading.Thread(target=_push_articles, args=([saved],), daemon=True).start()
+    return saved
 
 
 # ── AI Excel column mapping (YandexGPT) ───────────────────────────────────

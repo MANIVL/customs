@@ -130,7 +130,7 @@ def _seed_if_empty(db: sqlite3.Connection) -> None:
     rows = _load_source_rows()
     if not rows:
         return
-    stamp = _now()
+    stamp = "2020-01-01T00:00:00+00:00"
     placeholders = ", ".join("?" for _ in FIELD_KEYS)
     columns = ", ".join(FIELD_KEYS)
     db.executemany(
@@ -278,6 +278,48 @@ def create_article(payload: dict[str, Any]) -> dict[str, Any]:
     if created is None:
         raise RuntimeError("Не удалось сохранить артикул")
     return created
+
+
+def export_all() -> list[dict[str, Any]]:
+    with _connect() as db:
+        rows = db.execute("SELECT * FROM articles ORDER BY article COLLATE NOCASE").fetchall()
+    return [_row_dict(row) for row in rows]
+
+
+def apply_remote(items: list[dict[str, Any]]) -> dict[str, int]:
+    """Keep the newer copy of each article. Used by both sides of the sync."""
+    inserted = updated = 0
+    with _connect() as db:
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            cleaned = _clean_payload(item, require_article=False)
+            if not cleaned["article"]:
+                continue
+            remote_stamp = str(item.get("updated_at") or "")
+            existing = _find_conflict(db, cleaned["article"], None)
+            if existing is None:
+                db.execute(
+                    f"INSERT INTO articles ({', '.join(FIELD_KEYS)}, updated_at) VALUES ({', '.join('?' for _ in FIELD_KEYS)}, ?)",
+                    tuple(cleaned[key] for key in FIELD_KEYS) + (remote_stamp or _now(),),
+                )
+                inserted += 1
+                continue
+            current = db.execute("SELECT * FROM articles WHERE id = ?", (existing["id"],)).fetchone()
+            local_stamp = current["updated_at"] or ""
+            if remote_stamp and local_stamp and remote_stamp <= local_stamp:
+                continue
+            same = all((current[key] or "") == cleaned[key] for key in FIELD_KEYS)
+            if same:
+                continue
+            assignments = ", ".join(f"{key} = ?" for key in FIELD_KEYS)
+            db.execute(
+                f"UPDATE articles SET {assignments}, updated_at = ? WHERE id = ?",
+                tuple(cleaned[key] for key in FIELD_KEYS) + (remote_stamp or _now(), existing["id"]),
+            )
+            updated += 1
+        db.commit()
+    return {"inserted": inserted, "updated": updated}
 
 
 def update_article(article_id: int, payload: dict[str, Any]) -> dict[str, Any]:
