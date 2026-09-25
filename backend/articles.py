@@ -70,7 +70,7 @@ def _cell_text(value: Any) -> str:
         if value.is_integer():
             return str(int(value))
         return str(value).strip()
-    return str(value).strip()
+    return str(value).strip().upper()
 
 
 def _norm_header(value: Any) -> str:
@@ -160,7 +160,7 @@ def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _clean_payload(payload: dict[str, Any], *, require_article: bool) -> dict[str, str]:
     if not isinstance(payload, dict):
         raise ValueError("Ожидается объект с полями артикула")
-    cleaned = {key: str(payload.get(key) or "").strip() for key in FIELD_KEYS}
+    cleaned = {key: str(payload.get(key) or "").strip().upper() for key in FIELD_KEYS}
     if require_article and not cleaned["article"]:
         raise ValueError("Укажите артикул")
     if len(cleaned["article"]) > 200:

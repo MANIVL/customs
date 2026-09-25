@@ -631,8 +631,16 @@
       if (longText) wrap.classList.add('article-field-wide');
       var input = document.createElement(longText ? 'textarea' : 'input');
       input.name = field.key;
-      input.value = item && item[field.key] ? item[field.key] : '';
+      input.value = item && item[field.key] ? String(item[field.key]).toUpperCase() : '';
       if (field.key === 'article') input.required = true;
+      input.addEventListener('input', function () {
+        var start = input.selectionStart;
+        var end = input.selectionEnd;
+        var upper = input.value.toUpperCase();
+        if (upper === input.value) return;
+        input.value = upper;
+        try { input.setSelectionRange(start, end); } catch (err) {}
+      });
       if (field.key === 'hs_code' && articleEditingId) {
         var originalCode = input.value.trim();
         var lookupTimer = null;
@@ -649,7 +657,7 @@
               .then(function (data) {
                 if (!data || !data.description || input.value.trim() !== code) return;
                 var desc = articleEl.fields.querySelector('[name="description"]');
-                if (desc) desc.value = data.description;
+                if (desc) desc.value = String(data.description).toUpperCase();
               })
               .catch(function () {});
           }, 300);
@@ -982,7 +990,7 @@
       clearFormError();
       var payload = {};
       articleEl.fields.querySelectorAll('input, textarea').forEach(function (input) {
-        payload[input.name] = input.value;
+        payload[input.name] = input.value.toUpperCase();
       });
       var url = articleEditingId ? (API + '/api/articles/' + articleEditingId) : (API + '/api/articles');
       fetch(url, {
