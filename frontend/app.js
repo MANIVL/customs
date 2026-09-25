@@ -787,6 +787,10 @@
     filterEl.all.indeterminate = checked > 0 && checked < inputs.length;
   }
 
+  function draftKey(value) {
+    return value === '' ? '\0blank' : value;
+  }
+
   function renderFilterList() {
     var needle = (filterEl.search.value || '').trim().toLowerCase();
     filterEl.list.innerHTML = '';
@@ -797,9 +801,9 @@
       var input = document.createElement('input');
       input.type = 'checkbox';
       input._filterValue = value;
-      input.checked = !!filterDraft[value];
+      input.checked = !!filterDraft[draftKey(value)];
       input.addEventListener('change', function () {
-        filterDraft[value] = input.checked;
+        filterDraft[draftKey(value)] = input.checked;
         syncFilterAll();
       });
       var text = document.createElement('span');
@@ -815,14 +819,14 @@
     var needle = (filterEl.search.value || '').trim().toLowerCase();
     filterValues.forEach(function (value) {
       var caption = value === '' ? '(Пустые)' : value;
-      filterDraft[value] = !needle || caption.toLowerCase().indexOf(needle) !== -1;
+      filterDraft[draftKey(value)] = !needle || caption.toLowerCase().indexOf(needle) !== -1;
     });
     renderFilterList();
   }
 
   function commitColumnFilter() {
     if (!filterField) return;
-    var checked = filterValues.filter(function (value) { return filterDraft[value]; });
+    var checked = filterValues.filter(function (value) { return filterDraft[draftKey(value)]; });
     if (!checked.length) {
       articleState.filters[filterField] = [];
     } else if (checked.length === filterValues.length) {
@@ -853,10 +857,11 @@
     }).then(function (data) {
       filterField = field;
       filterValues = data.values || [];
+      if (filterValues.indexOf('') === -1) filterValues.unshift('');
       var selected = articleState.filters[field];
       filterDraft = {};
       filterValues.forEach(function (value) {
-        filterDraft[value] = !selected || selected.indexOf(value) !== -1;
+        filterDraft[draftKey(value)] = !selected || selected.indexOf(value) !== -1;
       });
       filterEl.search.value = '';
       renderFilterList();
@@ -922,7 +927,7 @@
     filterEl.all.addEventListener('change', function () {
       visibleFilterInputs().forEach(function (input) {
         input.checked = filterEl.all.checked;
-        filterDraft[input._filterValue] = filterEl.all.checked;
+        filterDraft[draftKey(input._filterValue)] = filterEl.all.checked;
       });
       filterEl.all.indeterminate = false;
     });

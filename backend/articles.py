@@ -207,9 +207,16 @@ def _where(query: str, filters: dict[str, Any] | None, skip_field: str | None = 
         if not values:
             parts.append("0")
             continue
-        placeholders = ", ".join("?" for _ in values)
-        parts.append(f"COALESCE({key}, '') IN ({placeholders})")
-        params.extend(values)
+        blanks = any(not str(value).strip() for value in values)
+        concrete = [value for value in values if str(value).strip()]
+        clauses: list[str] = []
+        if blanks:
+            clauses.append(f"TRIM(COALESCE({key}, '')) = ''")
+        if concrete:
+            placeholders = ", ".join("?" for _ in concrete)
+            clauses.append(f"{key} IN ({placeholders})")
+            params.extend(concrete)
+        parts.append("(" + " OR ".join(clauses) + ")")
     if not parts:
         return "", []
     return "WHERE " + " AND ".join(parts), params
@@ -247,14 +254,20 @@ def distinct_values(field: str, query: str, filters: dict[str, Any] | None = Non
     with _connect() as db:
         rows = db.execute(
             f"""
-            SELECT DISTINCT COALESCE({field}, '') AS value
+            SELECT DISTINCT CASE
+                WHEN TRIM(COALESCE({field}, '')) = '' THEN ''
+                ELSE {field}
+            END AS value
             FROM articles
             {where}
-            ORDER BY value COLLATE NOCASE
+            ORDER BY CASE WHEN value = '' THEN 0 ELSE 1 END, value COLLATE NOCASE
             """,
             params,
         ).fetchall()
-    return [row["value"] for row in rows]
+    values = [row["value"] for row in rows]
+    if "" not in values:
+        values.insert(0, "")
+    return values
 
 
 def most_common_description(hs_code: str) -> dict[str, Any]:
