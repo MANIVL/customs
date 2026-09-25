@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260925.7" />
+  <link rel="stylesheet" href="style.css?v=20260925.8" />
 </head>
 <body>
   <header class="topbar">
@@ -183,6 +183,8 @@
           </div>
           <div id="articleError" class="error-box" style="display:none;"></div>
           <div class="article-meta" id="articleMeta">Загрузка…</div>
+          <div class="article-workspace">
+            <div class="article-main">
           <div class="article-table-wrap">
             <table class="article-table">
               <colgroup>
@@ -215,6 +217,21 @@
             </table>
           </div>
           <div id="articlePager" class="article-pager"></div>
+            </div>
+            <aside id="articleModal" class="article-side" hidden>
+              <form id="articleForm" class="article-dialog">
+                <header class="compare-head">
+                  <h3 id="articleFormTitle">Артикул</h3>
+                  <button id="articleCancelBtn" type="button" class="btn btn-ghost">Закрыть</button>
+                </header>
+                <div id="articleFields" class="article-fields"></div>
+                <div id="articleFormError" class="error-box" style="display:none;"></div>
+                <div class="article-form-actions">
+                  <button type="submit" class="btn btn-primary">Сохранить</button>
+                </div>
+              </form>
+            </aside>
+          </div>
           <div id="articleFilter" class="article-filter" hidden>
             <input id="articleFilterSearch" type="search" placeholder="Поиск" />
             <label class="article-filter-all"><input id="articleFilterAll" type="checkbox" /> (Выделить все)</label>
@@ -252,26 +269,12 @@
     </div>
   </div>
 
-      <div id="articleModal" class="compare-modal" hidden>
-        <form id="articleForm" class="compare-dialog article-dialog">
-          <header class="compare-head">
-            <h3 id="articleFormTitle">Артикул</h3>
-            <button id="articleCancelBtn" type="button" class="btn btn-ghost">Закрыть</button>
-          </header>
-          <div id="articleFields" class="article-fields"></div>
-          <div id="articleFormError" class="error-box" style="display:none;"></div>
-          <div class="article-form-actions">
-            <button type="submit" class="btn btn-primary">Сохранить</button>
-          </div>
-        </form>
-      </div>
-
   <footer>
     <div class="wrap">
       ТаможенФормат · Веб‑версия
     </div>
   </footer>
 
-  <script src="app.js?v=20260925.5"></script>
+  <script src="app.js?v=20260925.8"></script>
 </body>
 </html>

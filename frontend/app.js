@@ -657,11 +657,19 @@
     articleEl.title.textContent = articleEditingId ? 'Изменить артикул' : 'Новый артикул';
     renderArticleForm(item);
     articleEl.modal.hidden = false;
+    markEditingRow();
   }
 
   function closeArticleForm() {
     articleEl.modal.hidden = true;
     articleEditingId = null;
+    markEditingRow();
+  }
+
+  function markEditingRow() {
+    document.querySelectorAll('#articleRows tr').forEach(function (tr) {
+      tr.classList.toggle('article-row-active', !!(articleEditingId && String(tr.dataset.id) === String(articleEditingId)));
+    });
   }
 
   function renderArticleTable(data) {
@@ -670,6 +678,7 @@
     articleEl.rows.innerHTML = '';
     (data.items || []).forEach(function (item) {
       var tr = document.createElement('tr');
+      tr.dataset.id = item.id ? String(item.id) : '';
       [item.article, item.description, item.origin_code, item.hs_code, item.group_description, item.manufacturer, item.brand, item.model, item.extra_code].forEach(function (value) {
         var td = document.createElement('td');
         td.textContent = value || '';
@@ -694,6 +703,7 @@
       articleEl.rows.appendChild(empty);
     }
     articleEl.meta.textContent = 'Записей: ' + (data.total || 0);
+    markEditingRow();
     articleEl.pager.innerHTML = '';
     if ((data.pages || 1) > 1) {
       var prev = document.createElement('button');
@@ -905,11 +915,6 @@
   }
   if (articleEl.cancel) {
     articleEl.cancel.addEventListener('click', closeArticleForm);
-  }
-  if (articleEl.modal) {
-    articleEl.modal.addEventListener('click', function (e) {
-      if (e.target === articleEl.modal) closeArticleForm();
-    });
   }
   if (articleEl.form) {
     articleEl.form.addEventListener('submit', function (e) {
