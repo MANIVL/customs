@@ -410,14 +410,14 @@ body.catalog-wide .topbar-inner {
   table-layout: fixed;
 }
 .article-table .col-article { width: 8%; }
-.article-table .col-description { width: 16%; }
+.article-table .col-description { width: 18%; }
 .article-table .col-origin { width: 5%; }
 .article-table .col-hs { width: 8%; }
-.article-table .col-group { width: 15%; }
+.article-table .col-group { width: 16%; }
 .article-table .col-manufacturer { width: 13%; }
 .article-table .col-brand { width: 9%; }
 .article-table .col-model { width: 8%; }
-.article-table .col-extra { width: 11%; }
+.article-table .col-extra { width: 8%; }
 .article-table .col-action { width: 7%; }
 .article-table th,
 .article-table td {
@@ -433,6 +433,69 @@ body.catalog-wide .topbar-inner {
   top: 0;
   background: var(--color-surface-offset, var(--color-surface));
   white-space: normal;
+}
+.article-th {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 4px;
+}
+.article-filter-btn {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  color: var(--color-text-muted);
+}
+.article-filter-btn:hover,
+.article-filter-btn.active {
+  background: var(--color-primary-highlight);
+  color: var(--color-primary);
+}
+.article-filter {
+  position: fixed;
+  z-index: 40;
+  width: 280px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.article-filter[hidden] { display: none; }
+.article-filter input[type="search"] {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-surface);
+  font-size: 13px;
+}
+.article-filter-all,
+.article-filter-list label {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  font-size: 13px;
+}
+.article-filter-list {
+  overflow: auto;
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.article-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 .article-pager {
   display: flex;

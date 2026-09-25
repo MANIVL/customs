@@ -278,6 +278,13 @@ def health():
     }
 
 
+def _article_body_filters(body: dict) -> dict:
+    filters = body.get("filters") or {}
+    if not isinstance(filters, dict):
+        raise ValueError("Фильтр должен быть объектом")
+    return filters
+
+
 @app.get("/api/articles")
 def list_articles(
     q: str = "",
@@ -285,6 +292,38 @@ def list_articles(
     per_page: int = Query(40, ge=1, le=200),
 ):
     return articles.search(q, page, per_page)
+
+
+@app.post("/api/articles/query")
+async def query_articles(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Некорректный запрос"}, status_code=422)
+    try:
+        return articles.search(
+            str(body.get("q") or ""),
+            int(body.get("page") or 1),
+            int(body.get("per_page") or 40),
+            _article_body_filters(body),
+        )
+    except (ValueError, TypeError) as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+
+
+@app.post("/api/articles/values")
+async def article_values(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "Некорректный запрос"}, status_code=422)
+    try:
+        values = articles.distinct_values(
+            str(body.get("field") or ""),
+            str(body.get("q") or ""),
+            _article_body_filters(body),
+        )
+    except ValueError as e:
+        return JSONResponse({"error": str(e)}, status_code=422)
+    return {"values": values}
 
 
 @app.get("/api/articles/{article_id}")

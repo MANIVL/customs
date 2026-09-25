@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260925.3" />
+  <link rel="stylesheet" href="style.css?v=20260925.4" />
 </head>
 <body>
   <header class="topbar">
@@ -199,15 +199,15 @@
               </colgroup>
               <thead>
                 <tr>
-                  <th>Артикул</th>
-                  <th>Описание товара</th>
-                  <th>Страна</th>
-                  <th>Код товара</th>
-                  <th>Описание группы</th>
-                  <th>Изготовитель</th>
-                  <th>Марка</th>
-                  <th>Модель</th>
-                  <th>Код по классификатору дополнительной таможенной информации</th>
+                  <th><span class="article-th"><span>Артикул</span><button type="button" class="article-filter-btn" data-field="article" aria-label="Фильтр: Артикул"></button></span></th>
+                  <th><span class="article-th"><span>Описание товара</span><button type="button" class="article-filter-btn" data-field="description" aria-label="Фильтр: Описание товара"></button></span></th>
+                  <th><span class="article-th"><span>Страна</span><button type="button" class="article-filter-btn" data-field="origin_code" aria-label="Фильтр: Страна"></button></span></th>
+                  <th><span class="article-th"><span>Код товара</span><button type="button" class="article-filter-btn" data-field="hs_code" aria-label="Фильтр: Код товара"></button></span></th>
+                  <th><span class="article-th"><span>Описание группы</span><button type="button" class="article-filter-btn" data-field="group_description" aria-label="Фильтр: Описание группы"></button></span></th>
+                  <th><span class="article-th"><span>Изготовитель</span><button type="button" class="article-filter-btn" data-field="manufacturer" aria-label="Фильтр: Изготовитель"></button></span></th>
+                  <th><span class="article-th"><span>Марка</span><button type="button" class="article-filter-btn" data-field="brand" aria-label="Фильтр: Марка"></button></span></th>
+                  <th><span class="article-th"><span>Модель</span><button type="button" class="article-filter-btn" data-field="model" aria-label="Фильтр: Модель"></button></span></th>
+                  <th><span class="article-th"><span>Доп. код</span><button type="button" class="article-filter-btn" data-field="extra_code" aria-label="Фильтр: Доп. код"></button></span></th>
                   <th></th>
                 </tr>
               </thead>
@@ -215,6 +215,15 @@
             </table>
           </div>
           <div id="articlePager" class="article-pager"></div>
+          <div id="articleFilter" class="article-filter" hidden>
+            <input id="articleFilterSearch" type="search" placeholder="Поиск" />
+            <label class="article-filter-all"><input id="articleFilterAll" type="checkbox" /> (Выделить все)</label>
+            <div id="articleFilterList" class="article-filter-list"></div>
+            <div class="article-filter-actions">
+              <button id="articleFilterOk" type="button" class="btn btn-primary">ОК</button>
+              <button id="articleFilterCancel" type="button" class="btn btn-ghost">Отмена</button>
+            </div>
+          </div>
         </article>
       </section>
       </div>
@@ -263,6 +272,6 @@
     </div>
   </footer>
 
-  <script src="app.js?v=20260925.3"></script>
+  <script src="app.js?v=20260925.5"></script>
 </body>
 </html>

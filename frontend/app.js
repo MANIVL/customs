@@ -579,7 +579,7 @@
   })();
 
   // ---- Article catalog ----
-  var articleState = { q: '', page: 1, pages: 1, fields: [] };
+  var articleState = { q: '', page: 1, pages: 1, fields: [], filters: {} };
   var articleEditingId = null;
 
   var articleEl = {
@@ -621,14 +621,14 @@
       { key: 'manufacturer', label: 'Наименование фирмы-изготовителя' },
       { key: 'brand', label: 'Марка' },
       { key: 'model', label: 'Модель' },
-      { key: 'extra_code', label: 'Код по классификатору дополнительной таможенной информации' },
+      { key: 'extra_code', label: 'Доп. код' },
     ]).forEach(function (field) {
       var wrap = document.createElement('label');
       wrap.className = 'article-field';
       var caption = document.createElement('span');
       caption.textContent = field.label;
       var longText = field.key === 'description' || field.key === 'group_description';
-      if (longText || field.key === 'extra_code') wrap.classList.add('article-field-wide');
+      if (longText) wrap.classList.add('article-field-wide');
       var input = document.createElement(longText ? 'textarea' : 'input');
       input.name = field.key;
       input.value = item && item[field.key] ? item[field.key] : '';
@@ -716,21 +716,168 @@
     }
   }
 
+  var filterEl = {
+    box: document.getElementById('articleFilter'),
+    search: document.getElementById('articleFilterSearch'),
+    all: document.getElementById('articleFilterAll'),
+    list: document.getElementById('articleFilterList'),
+    ok: document.getElementById('articleFilterOk'),
+    cancel: document.getElementById('articleFilterCancel'),
+  };
+  var filterField = null;
+  var filterDraft = {};
+  var filterValues = [];
+  var FILTER_ICON = '<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M1.5 2.5h13L9.2 8.4V13L6.4 14.2V8.4z"/></svg>';
+
+  document.querySelectorAll('.article-filter-btn').forEach(function (btn) {
+    btn.innerHTML = FILTER_ICON;
+  });
+
+  function markActiveFilters() {
+    document.querySelectorAll('.article-filter-btn').forEach(function (btn) {
+      btn.classList.toggle('active', Object.prototype.hasOwnProperty.call(articleState.filters, btn.dataset.field));
+    });
+  }
+
+  function closeColumnFilter() {
+    if (filterEl.box) filterEl.box.hidden = true;
+    filterField = null;
+  }
+
+  function visibleFilterInputs() {
+    return Array.from(filterEl.list.querySelectorAll('input[type="checkbox"]'));
+  }
+
+  function syncFilterAll() {
+    var inputs = visibleFilterInputs();
+    var checked = inputs.filter(function (input) { return input.checked; }).length;
+    filterEl.all.checked = inputs.length > 0 && checked === inputs.length;
+    filterEl.all.indeterminate = checked > 0 && checked < inputs.length;
+  }
+
+  function renderFilterList() {
+    var needle = (filterEl.search.value || '').trim().toLowerCase();
+    filterEl.list.innerHTML = '';
+    filterValues.forEach(function (value) {
+      var caption = value === '' ? '(Пустые)' : value;
+      if (needle && caption.toLowerCase().indexOf(needle) === -1) return;
+      var label = document.createElement('label');
+      var input = document.createElement('input');
+      input.type = 'checkbox';
+      input._filterValue = value;
+      input.checked = !!filterDraft[value];
+      input.addEventListener('change', function () {
+        filterDraft[value] = input.checked;
+        syncFilterAll();
+      });
+      var text = document.createElement('span');
+      text.textContent = caption;
+      label.appendChild(input);
+      label.appendChild(text);
+      filterEl.list.appendChild(label);
+    });
+    syncFilterAll();
+  }
+
+  function openColumnFilter(btn) {
+    var field = btn.dataset.field;
+    if (filterField === field && filterEl.box && !filterEl.box.hidden) {
+      closeColumnFilter();
+      return;
+    }
+    var others = {};
+    Object.keys(articleState.filters).forEach(function (key) {
+      if (key !== field) others[key] = articleState.filters[key];
+    });
+    fetch(API + '/api/articles/values', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field: field, q: articleState.q, filters: others }),
+    }).then(function (res) {
+      if (!res.ok) return readErrorBody(res);
+      return res.json();
+    }).then(function (data) {
+      filterField = field;
+      filterValues = data.values || [];
+      var selected = articleState.filters[field];
+      filterDraft = {};
+      filterValues.forEach(function (value) {
+        filterDraft[value] = !selected || selected.indexOf(value) !== -1;
+      });
+      filterEl.search.value = '';
+      renderFilterList();
+      var rect = btn.getBoundingClientRect();
+      var width = 280;
+      var left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      filterEl.box.hidden = false;
+      filterEl.box.style.left = left + 'px';
+      filterEl.box.style.top = (rect.bottom + 4) + 'px';
+      filterEl.search.focus();
+    }).catch(function (err) {
+      showArticleError(err.message || String(err));
+    });
+  }
+
   function loadArticles(page) {
     articleState.page = page || 1;
     clearArticleError();
-    var params = new URLSearchParams();
-    if (articleState.q) params.set('q', articleState.q);
-    params.set('page', String(articleState.page));
-    params.set('per_page', '40');
-    fetch(API + '/api/articles?' + params.toString())
-      .then(function (res) {
-        if (!res.ok) return readErrorBody(res);
-        return res.json();
-      })
-      .then(function (data) { renderArticleTable(data); })
-      .catch(function (e) { showArticleError(e.message || String(e)); });
+    fetch(API + '/api/articles/query', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        q: articleState.q,
+        page: articleState.page,
+        per_page: 40,
+        filters: articleState.filters,
+      }),
+    }).then(function (res) {
+      if (!res.ok) return readErrorBody(res);
+      return res.json();
+    }).then(function (data) {
+      renderArticleTable(data);
+      markActiveFilters();
+    }).catch(function (e) { showArticleError(e.message || String(e)); });
   }
+
+  document.querySelectorAll('.article-filter-btn').forEach(function (btn) {
+    btn.addEventListener('click', function (e) {
+      e.stopPropagation();
+      openColumnFilter(btn);
+    });
+  });
+  if (filterEl.search) {
+    filterEl.search.addEventListener('input', renderFilterList);
+  }
+  if (filterEl.all) {
+    filterEl.all.addEventListener('change', function () {
+      visibleFilterInputs().forEach(function (input) {
+        input.checked = filterEl.all.checked;
+        filterDraft[input._filterValue] = filterEl.all.checked;
+      });
+      filterEl.all.indeterminate = false;
+    });
+  }
+  if (filterEl.ok) {
+    filterEl.ok.addEventListener('click', function () {
+      var checked = filterValues.filter(function (value) { return filterDraft[value]; });
+      if (!filterValues.length || checked.length === filterValues.length) {
+        delete articleState.filters[filterField];
+      } else {
+        articleState.filters[filterField] = checked;
+      }
+      closeColumnFilter();
+      loadArticles(1);
+    });
+  }
+  if (filterEl.cancel) filterEl.cancel.addEventListener('click', closeColumnFilter);
+  document.addEventListener('click', function (e) {
+    if (!filterEl.box || filterEl.box.hidden) return;
+    if (filterEl.box.contains(e.target)) return;
+    closeColumnFilter();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeColumnFilter();
+  });
 
   if (articleEl.searchBtn) {
     articleEl.searchBtn.addEventListener('click', function () {
@@ -745,6 +892,12 @@
         articleState.q = articleEl.search.value.trim();
         loadArticles(1);
       }
+    });
+    articleEl.search.addEventListener('input', function () {
+      if ((articleEl.search.value || '').trim()) return;
+      if (!articleState.q) return;
+      articleState.q = '';
+      loadArticles(1);
     });
   }
   if (articleEl.addBtn) {

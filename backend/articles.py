@@ -26,7 +26,7 @@ FIELDS: list[tuple[str, str, tuple[str, ...]]] = [
     ("model", "Модель", ("модель",)),
     (
         "extra_code",
-        "Код по классификатору дополнительной таможенной информации",
+        "Доп. код",
         ("дополнительной таможенной", "классификатору"),
     ),
 ]
@@ -180,17 +180,45 @@ def _find_conflict(db: sqlite3.Connection, article: str, exclude_id: int | None)
     ).fetchone()
 
 
-def search(query: str, page: int, per_page: int) -> dict[str, Any]:
-    page = max(1, page)
-    per_page = min(max(1, per_page), 200)
-    text = (query or "").strip()
-    where = ""
+def _normalize_filters(filters: dict[str, Any] | None, skip_field: str | None = None) -> dict[str, list[str]]:
+    if not filters:
+        return {}
+    if not isinstance(filters, dict):
+        raise ValueError("Фильтр должен быть объектом")
+    cleaned: dict[str, list[str]] = {}
+    for key, values in filters.items():
+        if key not in FIELD_KEYS or key == skip_field:
+            continue
+        if not isinstance(values, list):
+            raise ValueError("Фильтр столбца должен быть списком значений")
+        cleaned[key] = [str(value) for value in values]
+    return cleaned
+
+
+def _where(query: str, filters: dict[str, Any] | None, skip_field: str | None = None) -> tuple[str, list[Any]]:
+    parts: list[str] = []
     params: list[Any] = []
+    text = (query or "").strip()
     if text:
         like = f"%{text.replace('%', '').replace('_', '')}%"
-        clauses = " OR ".join(f"{key} LIKE ? COLLATE NOCASE" for key in FIELD_KEYS)
-        where = f"WHERE {clauses}"
-        params = [like] * len(FIELD_KEYS)
+        parts.append("(" + " OR ".join(f"{key} LIKE ? COLLATE NOCASE" for key in FIELD_KEYS) + ")")
+        params.extend([like] * len(FIELD_KEYS))
+    for key, values in _normalize_filters(filters, skip_field).items():
+        if not values:
+            parts.append("0")
+            continue
+        placeholders = ", ".join("?" for _ in values)
+        parts.append(f"COALESCE({key}, '') IN ({placeholders})")
+        params.extend(values)
+    if not parts:
+        return "", []
+    return "WHERE " + " AND ".join(parts), params
+
+
+def search(query: str, page: int, per_page: int, filters: dict[str, Any] | None = None) -> dict[str, Any]:
+    page = max(1, int(page or 1))
+    per_page = min(max(1, int(per_page or 40)), 200)
+    where, params = _where(query, filters)
     with _connect() as db:
         total = db.execute(f"SELECT COUNT(*) AS c FROM articles {where}", params).fetchone()["c"]
         rows = db.execute(
@@ -210,6 +238,23 @@ def search(query: str, page: int, per_page: int) -> dict[str, Any]:
         "per_page": per_page,
         "pages": max(1, (total + per_page - 1) // per_page) if total else 1,
     }
+
+
+def distinct_values(field: str, query: str, filters: dict[str, Any] | None = None) -> list[str]:
+    if field not in FIELD_KEYS:
+        raise ValueError("Неизвестный столбец")
+    where, params = _where(query, filters, skip_field=field)
+    with _connect() as db:
+        rows = db.execute(
+            f"""
+            SELECT DISTINCT COALESCE({field}, '') AS value
+            FROM articles
+            {where}
+            ORDER BY value COLLATE NOCASE
+            """,
+            params,
+        ).fetchall()
+    return [row["value"] for row in rows]
 
 
 def get_article(article_id: int) -> dict[str, Any] | None:
