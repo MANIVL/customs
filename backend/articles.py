@@ -257,6 +257,27 @@ def distinct_values(field: str, query: str, filters: dict[str, Any] | None = Non
     return [row["value"] for row in rows]
 
 
+def most_common_description(hs_code: str) -> dict[str, Any]:
+    code = str(hs_code or "").strip()
+    if not code:
+        return {"description": "", "count": 0}
+    with _connect() as db:
+        row = db.execute(
+            """
+            SELECT description, COUNT(*) AS n
+            FROM articles
+            WHERE hs_code = ? AND TRIM(description) != ''
+            GROUP BY description
+            ORDER BY n DESC, description COLLATE NOCASE
+            LIMIT 1
+            """,
+            (code,),
+        ).fetchone()
+    if row is None:
+        return {"description": "", "count": 0}
+    return {"description": row["description"], "count": int(row["n"])}
+
+
 def get_article(article_id: int) -> dict[str, Any] | None:
     with _connect() as db:
         row = db.execute("SELECT * FROM articles WHERE id = ?", (article_id,)).fetchone()

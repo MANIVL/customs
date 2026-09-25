@@ -398,6 +398,11 @@ async def article_values(request: Request):
     return {"values": values}
 
 
+@app.get("/api/articles/common-description")
+def common_description(hs_code: str = ""):
+    return articles.most_common_description(hs_code)
+
+
 @app.post("/api/articles/sync")
 async def sync_articles(request: Request):
     body = await request.json()

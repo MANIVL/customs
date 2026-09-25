@@ -633,6 +633,28 @@
       input.name = field.key;
       input.value = item && item[field.key] ? item[field.key] : '';
       if (field.key === 'article') input.required = true;
+      if (field.key === 'hs_code' && articleEditingId) {
+        var originalCode = input.value.trim();
+        var lookupTimer = null;
+        input.addEventListener('input', function () {
+          clearTimeout(lookupTimer);
+          var code = input.value.trim();
+          if (!code || code === originalCode) return;
+          lookupTimer = setTimeout(function () {
+            fetch(API + '/api/articles/common-description?hs_code=' + encodeURIComponent(code))
+              .then(function (res) {
+                if (!res.ok) return readErrorBody(res);
+                return res.json();
+              })
+              .then(function (data) {
+                if (!data || !data.description || input.value.trim() !== code) return;
+                var desc = articleEl.fields.querySelector('[name="description"]');
+                if (desc) desc.value = data.description;
+              })
+              .catch(function () {});
+          }, 300);
+        });
+      }
       wrap.appendChild(caption);
       wrap.appendChild(input);
       articleEl.fields.appendChild(wrap);
@@ -881,6 +903,8 @@
   if (resetFiltersBtn) {
     resetFiltersBtn.addEventListener('click', function () {
       articleState.filters = {};
+      articleState.q = '';
+      if (articleEl.search) articleEl.search.value = '';
       closeColumnFilter();
       loadArticles(1);
     });
