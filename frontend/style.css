@@ -410,10 +410,10 @@ body.catalog-wide .topbar-inner {
   table-layout: fixed;
 }
 .article-table .col-article { width: 8%; }
-.article-table .col-description { width: 18%; }
-.article-table .col-origin { width: 5%; }
+.article-table .col-description { width: 13%; }
+.article-table .col-origin { width: 11%; }
 .article-table .col-hs { width: 8%; }
-.article-table .col-group { width: 16%; }
+.article-table .col-group { width: 15%; }
 .article-table .col-manufacturer { width: 13%; }
 .article-table .col-brand { width: 9%; }
 .article-table .col-model { width: 8%; }
@@ -423,10 +423,21 @@ body.catalog-wide .topbar-inner {
 .article-table td {
   padding: 8px 10px;
   border-bottom: 1px solid var(--color-divider, var(--color-border));
+  border-right: 1px solid var(--color-divider, var(--color-border));
   text-align: left;
   vertical-align: top;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+.article-table th:last-child,
+.article-table td:last-child {
+  border-right: none;
+}
+.article-table th:nth-child(3),
+.article-table td:nth-child(3) {
+  white-space: nowrap;
+  word-break: normal;
+  overflow-wrap: normal;
 }
 .article-table th {
   position: sticky;
