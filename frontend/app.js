@@ -702,6 +702,150 @@
     });
   }
 
+  var COL_WIDTH_KEY = 'tfArticleColWidths';
+  var ROW_HEIGHT_KEY = 'tfArticleRowHeights';
+  var HEADER_HEIGHT_KEY = 'tfArticleHeaderHeight';
+
+  function readStored(key, fallback) {
+    try {
+      var raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
+    } catch (err) {
+      return fallback;
+    }
+  }
+
+  function writeStored(key, value) {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch (err) {}
+  }
+
+  function articleTable() {
+    return document.querySelector('.article-table');
+  }
+
+  function applyColumnWidths(widths) {
+    var table = articleTable();
+    if (!table || !widths) return;
+    var cols = table.querySelectorAll('col');
+    if (widths.length !== cols.length) return;
+    var sum = 0;
+    cols.forEach(function (col, i) {
+      var width = Math.max(48, Math.round(widths[i]));
+      col.style.width = width + 'px';
+      sum += width;
+    });
+    table.style.width = sum + 'px';
+  }
+
+  function applyHeaderHeight(height) {
+    var inner = Math.max(24, Math.round(height) - 16);
+    articleTable().querySelectorAll('thead .cell-clip').forEach(function (clip) {
+      clip.style.maxHeight = inner + 'px';
+      clip.style.minHeight = inner + 'px';
+    });
+  }
+
+  function applyRowHeight(tr, height) {
+    var inner = Math.max(18, Math.round(height) - 16);
+    tr.querySelectorAll('.cell-clip').forEach(function (clip) {
+      clip.style.maxHeight = inner + 'px';
+      clip.style.minHeight = inner + 'px';
+    });
+  }
+
+  function trackDrag(className, move, done) {
+    document.body.classList.add(className);
+    function stop() {
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', stop);
+      document.body.classList.remove(className);
+      done();
+    }
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', stop);
+  }
+
+  function buildArticleCell(text) {
+    var td = document.createElement('td');
+    var clip = document.createElement('div');
+    clip.className = 'cell-clip';
+    clip.textContent = text;
+    td.appendChild(clip);
+    var handle = document.createElement('div');
+    handle.className = 'row-resizer';
+    handle.title = 'Высота строки';
+    handle.addEventListener('mousedown', function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      var tr = td.parentElement;
+      var startY = e.clientY;
+      var start = tr.getBoundingClientRect().height;
+      trackDrag('article-row-resizing', function (ev) {
+        applyRowHeight(tr, Math.max(28, start + ev.clientY - startY));
+      }, function () {
+        if (!tr.dataset.id) return;
+        var heights = readStored(ROW_HEIGHT_KEY, {});
+        heights[tr.dataset.id] = Math.round(tr.getBoundingClientRect().height);
+        writeStored(ROW_HEIGHT_KEY, heights);
+      });
+    });
+    td.appendChild(handle);
+    return td;
+  }
+
+  function bindColumnResize() {
+    var table = articleTable();
+    if (!table || table.dataset.resizeReady) return;
+    table.dataset.resizeReady = '1';
+    var saved = readStored(COL_WIDTH_KEY, null);
+    if (saved) applyColumnWidths(saved);
+    table.querySelectorAll('thead th').forEach(function (th, index) {
+      var clip = document.createElement('div');
+      clip.className = 'cell-clip';
+      while (th.firstChild) clip.appendChild(th.firstChild);
+      th.appendChild(clip);
+      var colHandle = document.createElement('div');
+      colHandle.className = 'col-resizer';
+      colHandle.title = 'Ширина столбца';
+      colHandle.addEventListener('mousedown', function (e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var widths = Array.from(table.querySelectorAll('thead th')).map(function (cell) {
+          return cell.getBoundingClientRect().width;
+        });
+        var startX = e.clientX;
+        var start = widths[index];
+        trackDrag('article-resizing', function (ev) {
+          widths[index] = Math.max(48, start + ev.clientX - startX);
+          applyColumnWidths(widths);
+        }, function () {
+          writeStored(COL_WIDTH_KEY, widths.map(function (width) { return Math.round(width); }));
+        });
+      });
+      var rowHandle = document.createElement('div');
+      rowHandle.className = 'row-resizer';
+      rowHandle.title = 'Высота строки';
+      rowHandle.addEventListener('mousedown', function (e) {
+        if (e.button !== 0) return;
+        e.preventDefault();
+        e.stopPropagation();
+        var startY = e.clientY;
+        var start = th.parentElement.getBoundingClientRect().height;
+        trackDrag('article-row-resizing', function (ev) {
+          applyHeaderHeight(Math.max(36, start + ev.clientY - startY));
+        }, function () {
+          writeStored(HEADER_HEIGHT_KEY, Math.round(th.parentElement.getBoundingClientRect().height));
+        });
+      });
+      th.appendChild(colHandle);
+      th.appendChild(rowHandle);
+    });
+    var headerHeight = readStored(HEADER_HEIGHT_KEY, 0);
+    if (headerHeight) applyHeaderHeight(headerHeight);
+  }
+
   function renderArticleTable(data) {
     articleState.fields = data.fields || articleState.fields;
     articleState.pages = data.pages || 1;
@@ -710,19 +854,19 @@
       var tr = document.createElement('tr');
       tr.dataset.id = item.id ? String(item.id) : '';
       [item.article, item.description, item.origin_code, item.hs_code, item.group_description, item.manufacturer, item.brand, item.model, item.extra_code].forEach(function (value) {
-        var td = document.createElement('td');
-        td.textContent = value || '';
-        tr.appendChild(td);
+        tr.appendChild(buildArticleCell(value || ''));
       });
-      var action = document.createElement('td');
+      var action = buildArticleCell('');
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-ghost';
       btn.textContent = 'Изменить';
       btn.addEventListener('click', function () { openArticleForm(item); });
-      action.appendChild(btn);
+      action.querySelector('.cell-clip').appendChild(btn);
       tr.appendChild(action);
       articleEl.rows.appendChild(tr);
+      var savedHeight = readStored(ROW_HEIGHT_KEY, {})[tr.dataset.id];
+      if (savedHeight) applyRowHeight(tr, savedHeight);
     });
     if (!(data.items || []).length) {
       var empty = document.createElement('tr');
@@ -1008,6 +1152,7 @@
       });
     });
   }
+  bindColumnResize();
   document.querySelectorAll('.tab').forEach(function (tab) {
     tab.addEventListener('click', function () {
       if (tab.dataset.tab === 'articles') loadArticles(articleState.page || 1);
