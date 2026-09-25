@@ -641,7 +641,7 @@
         input.value = upper;
         try { input.setSelectionRange(start, end); } catch (err) {}
       });
-      if (field.key === 'hs_code' && articleEditingId) {
+      if (field.key === 'hs_code') {
         var originalCode = input.value.trim();
         var lookupTimer = null;
         input.addEventListener('input', function () {
