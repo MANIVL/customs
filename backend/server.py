@@ -6,13 +6,12 @@ Serves both the API and the static frontend from a single process.
 import os
 import sys
 import json
-import time
 import base64
 import shutil
-import threading
 import traceback
 import datetime
 import sqlite3
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -25,7 +24,7 @@ import articles
 
 from fastapi import FastAPI, UploadFile, File, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -160,71 +159,55 @@ _init_template_storage()
 app = FastAPI(title="ТаможенФормат")
 
 
-def _sync_base() -> str:
+def _articles_upstream() -> str:
+    """Local app reads and writes the catalog on Render. Render itself keeps SQLite."""
     if os.environ.get("RENDER_EXTERNAL_URL"):
         return ""
     return os.environ.get("ARTICLES_SYNC_URL", "").strip().rstrip("/")
 
 
-def _pull_public_articles() -> dict[str, int]:
-    base = _sync_base()
-    if not base:
-        return {"inserted": 0, "updated": 0}
-    page = 1
-    items: list = []
-    while True:
-        url = f"{base}/api/articles?page={page}&per_page=200"
-        with urllib.request.urlopen(url, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        items.extend(payload.get("items") or [])
-        if page >= int(payload.get("pages") or 1):
-            break
-        page += 1
-    return articles.apply_remote(items)
-
-
-def _push_articles(items: list) -> dict[str, int]:
-    base = _sync_base()
-    if not base or not items:
-        return {"inserted": 0, "updated": 0}
+def _forward_articles(method: str, url: str, body: bytes, content_type: str) -> Response:
+    data = None if method in ("GET", "HEAD") else body
     request = urllib.request.Request(
-        base + "/api/articles/sync",
-        data=json.dumps({"items": items}).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
+        url,
+        data=data,
+        headers={"Content-Type": content_type or "application/json"},
+        method=method,
     )
-    with urllib.request.urlopen(request, timeout=120) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    return {
-        "inserted": int(payload.get("inserted") or 0),
-        "updated": int(payload.get("updated") or 0),
-    }
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            payload = response.read()
+            status = response.status
+            media = response.headers.get("Content-Type", "application/json")
+    except urllib.error.HTTPError as exc:
+        payload = exc.read()
+        status = exc.code
+        media = exc.headers.get("Content-Type", "application/json")
+    except Exception as exc:
+        return JSONResponse(
+            {"error": f"Сайт с базой артикулов недоступен: {exc}"},
+            status_code=502,
+        )
+    return Response(content=payload, status_code=status, media_type=media.split(";")[0])
 
 
-def _article_sync_loop() -> None:
-    base = _sync_base()
-    if not base:
-        return
-    print(f"Синхронизация артикулов с {base}", flush=True)
-    while True:
-        try:
-            pushed = _push_articles(articles.export_all())
-            pulled = _pull_public_articles()
-            if any((pushed["inserted"], pushed["updated"], pulled["inserted"], pulled["updated"])):
-                print(
-                    "База артикулов синхронизирована: "
-                    f"на сайт новых {pushed['inserted']}, изменённых {pushed['updated']}; "
-                    f"локально новых {pulled['inserted']}, изменённых {pulled['updated']}",
-                    flush=True,
-                )
-        except Exception:
-            traceback.print_exc()
-        time.sleep(30)
-
-
-@app.on_event("startup")
-def _start_article_sync() -> None:
-    threading.Thread(target=_article_sync_loop, name="article-sync", daemon=True).start()
+@app.middleware("http")
+async def _articles_via_render(request: Request, call_next):
+    base = _articles_upstream()
+    path = request.url.path
+    if not base or not (path == "/api/articles" or path.startswith("/api/articles/")):
+        return await call_next(request)
+    body = await request.body()
+    url = base + path
+    if request.url.query:
+        url += "?" + request.url.query
+    return await run_in_threadpool(
+        _forward_articles,
+        request.method,
+        url,
+        body,
+        request.headers.get("content-type", ""),
+    )
 
 
 APP_VERSION = "2026-09-22.1"
@@ -346,6 +329,8 @@ def health():
         "data_dir": DATA_DIR,
         "template_exists": os.path.exists(TEMPLATE_PATH),
         "persistent_data": os.path.normpath(DATA_DIR) != os.path.normpath(BUNDLE_DATA_DIR),
+        "articles_via": _articles_upstream() or "sqlite",
+        "litestream": bool(os.environ.get("LITESTREAM_BUCKET", "").strip()),
         "telegram": bool(os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()),
     }
 
@@ -428,7 +413,6 @@ async def create_article(request: Request):
         saved = articles.create_article(await request.json())
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
-    threading.Thread(target=_push_articles, args=([saved],), daemon=True).start()
     return saved
 
 
@@ -440,7 +424,6 @@ async def update_article(article_id: int, request: Request):
         return JSONResponse({"error": str(e)}, status_code=404)
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
-    threading.Thread(target=_push_articles, args=([saved],), daemon=True).start()
     return saved
 
 

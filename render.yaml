@@ -2,23 +2,23 @@ services:
   - type: web
     name: tamozhenformat
     runtime: python
-    # Persistent disk requires a paid instance (not available on free).
-    plan: starter
+    # Free instance. The catalog is replicated to Cloud.ru Object Storage
+    # by Litestream, so a Render restart does not require a paid disk.
+    plan: free
     region: frankfurt
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn server:app --app-dir backend --host 0.0.0.0 --port $PORT
+    buildCommand: >-
+      pip install -r requirements.txt &&
+      curl -fsSL -o litestream.tar.gz https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz &&
+      tar -xzf litestream.tar.gz &&
+      rm -f litestream.tar.gz &&
+      chmod +x litestream
+    startCommand: sh start.sh
     healthCheckPath: /api/health
-    disk:
-      name: tamozhenformat-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: PYTHONUNBUFFERED
         value: "1"
       - key: APP_OPEN_BROWSER
         value: "0"
-      - key: DATA_DIR
-        value: /var/data
       - key: YANDEX_API_KEY
         sync: false
       - key: YANDEX_FOLDER_ID
@@ -26,4 +26,10 @@ services:
       - key: YANDEX_MODEL
         value: yandexgpt-lite
       - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: LITESTREAM_ACCESS_KEY_ID
+        sync: false
+      - key: LITESTREAM_SECRET_ACCESS_KEY
+        sync: false
+      - key: LITESTREAM_BUCKET
         sync: false
