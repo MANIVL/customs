@@ -671,7 +671,7 @@
       var xhr = new XMLHttpRequest();
       xhr.open('POST', API + '/api/articles/load-table' + (download ? '?download=1' : ''));
       xhr.responseType = download ? 'blob' : 'json';
-      if (download && xhr.upload) {
+      if (onProgress && xhr.upload) {
         xhr.upload.onprogress = function (event) {
           if (!event.lengthComputable || !onProgress) return;
           onProgress(Math.min(40, Math.round(event.loaded / event.total * 40)));
@@ -762,11 +762,7 @@
   function openDiffForm(diff) {
     clearDiffFormError();
     diffEditingId = diff.id;
-    var item = Object.assign({}, diff.db);
-    COMPARE_KEYS.forEach(function (key) {
-      var incoming = diff.file && diff.file[key];
-      if (incoming && incoming !== (diff.db[key] || '')) item[key] = incoming;
-    });
+    var item = diff.db || {};
     if (diffEl.title) diffEl.title.textContent = diff.article || 'Изменить';
     diffEl.fields.innerHTML = '';
     DIFF_FIELDS.forEach(function (field) {
@@ -901,10 +897,27 @@
         showLoadTableError('Выберите файл Excel.');
         return;
       }
-      loadTableEl.compare.disabled = true;
+      var button = loadTableEl.compare;
+      var progress = 0;
+      button.disabled = true;
+      button.textContent = '0%';
+      var timer = setInterval(function () {
+        if (progress < 90) {
+          progress += 2;
+          button.textContent = progress + '%';
+        }
+      }, 200);
       try {
-        var xhr = await postLoadTable(false);
+        var xhr = await postLoadTable(false, function (value) {
+          if (value > progress) {
+            progress = value;
+            button.textContent = progress + '%';
+          }
+        });
         if (!xhr) return;
+        clearInterval(timer);
+        timer = null;
+        button.textContent = '100%';
         var data = xhr.response || {};
         compareDiffs = data.diffs || [];
         clearDiffError();
@@ -915,14 +928,18 @@
           } else if (!compareDiffs.length) {
             diffEl.meta.textContent = 'Расхождений нет.';
           } else {
-            diffEl.meta.textContent = 'Расхождений: ' + compareDiffs.length + '. В форме подставлены значения из файла.';
+            diffEl.meta.textContent = 'Расхождений: ' + compareDiffs.length + '.';
           }
         }
         renderCompare();
       } catch (err) {
         showLoadTableError(err.message || 'Не удалось сравнить файл с базой');
       } finally {
-        loadTableEl.compare.disabled = false;
+        if (timer) clearInterval(timer);
+        setTimeout(function () {
+          button.textContent = 'Сравнение';
+          button.disabled = false;
+        }, 400);
       }
     });
   }
