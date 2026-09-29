@@ -598,6 +598,129 @@
     cancel: document.getElementById('articleCancelBtn'),
   };
 
+  var loadTableEl = {
+    file: document.getElementById('loadTableFile'),
+    button: document.getElementById('loadTableBtn'),
+    download: document.getElementById('loadTableDownload'),
+    error: document.getElementById('loadTableError'),
+    meta: document.getElementById('loadTableMeta'),
+    missing: document.getElementById('loadTableMissing'),
+    wrap: document.getElementById('loadTableWrap'),
+    head: document.getElementById('loadTableHead'),
+    rows: document.getElementById('loadTableRows'),
+  };
+
+  function showLoadTableError(msg) {
+    if (!loadTableEl.error) return;
+    loadTableEl.error.textContent = msg;
+    loadTableEl.error.style.display = 'block';
+  }
+
+  function clearLoadTableError() {
+    if (!loadTableEl.error) return;
+    loadTableEl.error.style.display = 'none';
+    loadTableEl.error.textContent = '';
+  }
+
+  function renderLoadTable(data) {
+    var fields = data.fields || [];
+    var items = data.items || [];
+    var missing = data.missing || [];
+    loadTableEl.head.innerHTML = '';
+    loadTableEl.rows.innerHTML = '';
+    var headRow = document.createElement('tr');
+    fields.forEach(function (field) {
+      var th = document.createElement('th');
+      th.textContent = field.label;
+      headRow.appendChild(th);
+    });
+    loadTableEl.head.appendChild(headRow);
+    items.forEach(function (item) {
+      var tr = document.createElement('tr');
+      fields.forEach(function (field) {
+        var td = document.createElement('td');
+        td.textContent = item[field.key] || '';
+        tr.appendChild(td);
+      });
+      loadTableEl.rows.appendChild(tr);
+    });
+    loadTableEl.wrap.hidden = items.length === 0;
+    var found = data.found_count || 0;
+    var total = data.total || found;
+    if (data.mode === 'scan') {
+      loadTableEl.meta.textContent = 'В файле нет отдельной колонки артикула. Найдено в базе: ' + found + '.';
+    } else if (missing.length) {
+      loadTableEl.meta.textContent = 'В базе найдено ' + found + ' из ' + total + '.';
+    } else {
+      loadTableEl.meta.textContent = 'Все ' + found + ' артикулов найдены в базе.';
+    }
+    if (missing.length) {
+      var shown = missing.slice(0, 40);
+      loadTableEl.missing.hidden = false;
+      loadTableEl.missing.textContent = 'Нет в базе: ' + shown.join(', ') + (missing.length > shown.length ? '…' : '');
+    } else {
+      loadTableEl.missing.hidden = true;
+      loadTableEl.missing.textContent = '';
+    }
+    loadTableEl.download.hidden = found === 0 && missing.length === 0;
+  }
+
+  async function requestLoadTable(download) {
+    clearLoadTableError();
+    var file = loadTableEl.file && loadTableEl.file.files && loadTableEl.file.files[0];
+    if (!file) {
+      showLoadTableError('Выберите файл Excel.');
+      return null;
+    }
+    var fd = new FormData();
+    fd.append('file', file);
+    var url = API + '/api/articles/load-table' + (download ? '?download=1' : '');
+    var res = await fetch(url, { method: 'POST', body: fd });
+    if (!res.ok) {
+      var data = await res.json().catch(function () { return {}; });
+      throw new Error((data && data.error) || 'Не удалось собрать таблицу');
+    }
+    return res;
+  }
+
+  if (loadTableEl.button) {
+    loadTableEl.button.addEventListener('click', async function () {
+      loadTableEl.button.disabled = true;
+      try {
+        var res = await requestLoadTable(false);
+        if (!res) return;
+        renderLoadTable(await res.json());
+      } catch (err) {
+        showLoadTableError(err.message || 'Не удалось собрать таблицу');
+      } finally {
+        loadTableEl.button.disabled = false;
+      }
+    });
+  }
+
+  if (loadTableEl.download) {
+    loadTableEl.download.addEventListener('click', async function () {
+      loadTableEl.download.disabled = true;
+      try {
+        var res = await requestLoadTable(true);
+        if (!res) return;
+        var blob = await res.blob();
+        var link = document.createElement('a');
+        var objectUrl = URL.createObjectURL(blob);
+        link.href = objectUrl;
+        link.download = 'загрузочная таблица.xlsx';
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        URL.revokeObjectURL(objectUrl);
+      } catch (err) {
+        showLoadTableError(err.message || 'Не удалось скачать таблицу');
+      } finally {
+        loadTableEl.download.disabled = false;
+      }
+    });
+  }
+
   function showArticleError(msg) {
     if (!articleEl.error) return;
     articleEl.error.textContent = msg;

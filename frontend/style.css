@@ -388,6 +388,18 @@ footer {
   flex: 1 1 240px;
   min-width: 0;
 }
+.article-toolbar input[type="file"] {
+  flex: 1 1 220px;
+}
+.article-lead {
+  margin: 0 0 12px;
+  color: var(--color-text-muted, var(--color-text));
+}
+.article-missing {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+}
 .article-meta {
   margin-top: 12px;
   font-size: 13px;

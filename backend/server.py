@@ -12,6 +12,7 @@ import traceback
 import datetime
 import sqlite3
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -21,6 +22,7 @@ import engine
 import ai_mapper
 import yandex_gpt
 import articles
+import article_load
 
 from fastapi import FastAPI, UploadFile, File, Form, Query, Request
 from fastapi.exceptions import RequestValidationError
@@ -397,6 +399,29 @@ async def sync_articles(request: Request):
         return articles.apply_remote(body["items"])
     except ValueError as e:
         return JSONResponse({"error": str(e)}, status_code=422)
+
+
+@app.post("/api/articles/load-table")
+async def article_load_table(file: UploadFile = File(...), download: int = Query(0)):
+    content = await file.read()
+    try:
+        result = await run_in_threadpool(article_load.build_load_table, content, file.filename)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    except RuntimeError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=422)
+    if download:
+        payload = await run_in_threadpool(article_load.load_table_xlsx, result)
+        filename = "загрузочная таблица.xlsx"
+        quoted = urllib.parse.quote(filename)
+        return Response(
+            content=payload,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": f"attachment; filename=\"load-table.xlsx\"; filename*=UTF-8''{quoted}"
+            },
+        )
+    return result
 
 
 @app.get("/api/articles/{article_id}")

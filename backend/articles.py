@@ -150,6 +150,17 @@ def field_meta() -> list[dict[str, str]]:
     return [{"key": key, "label": label} for key, label, _needles in FIELDS]
 
 
+def index_by_article() -> dict[str, dict[str, Any]]:
+    """All catalog rows keyed by article, ignoring letter case."""
+    with _connect() as db:
+        rows = db.execute("SELECT * FROM articles").fetchall()
+    indexed: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        data = _row_dict(row)
+        indexed[data["article"].casefold()] = data
+    return indexed
+
+
 def _row_dict(row: sqlite3.Row) -> dict[str, Any]:
     data = {"id": row["id"], "updated_at": row["updated_at"]}
     for key in FIELD_KEYS:
