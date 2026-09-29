@@ -153,6 +153,19 @@ def _catalog_item(row_data: dict[str, Any]) -> dict[str, str]:
     return {key: row_data[key] for key in articles.FIELD_KEYS}
 
 
+def _full_hs(value: str) -> bool:
+    """A product code is comparable only in the full 10-digit form."""
+    return len(value) == 10 and value.isdigit()
+
+
+def _values_differ(key: str, file_value: str, db_value: str) -> bool:
+    if not file_value or file_value == db_value:
+        return False
+    if key == "hs_code":
+        return _full_hs(file_value) and _full_hs(db_value)
+    return True
+
+
 def build_load_table(content: bytes, filename: str | None = None) -> dict[str, Any]:
     if not content:
         raise ValueError("Файл пустой")
@@ -198,7 +211,7 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
             changed = [
                 key
                 for key in _COMPARE_KEYS
-                if file_values.get(key) and file_values.get(key) != (row_data[key] or "")
+                if _values_differ(key, file_values.get(key, ""), row_data[key] or "")
             ]
             if not changed:
                 continue

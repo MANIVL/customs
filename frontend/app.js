@@ -704,6 +704,7 @@
     var incoming = (diff.file && diff.file[key]) || '';
     var current = (diff.db && diff.db[key]) || '';
     if (!incoming || incoming === current) return td;
+    if (key === 'hs_code' && !(/^\d{10}$/.test(incoming) && /^\d{10}$/.test(current))) return td;
     var fileLine = document.createElement('span');
     fileLine.className = 'compare-file';
     fileLine.textContent = 'файл: ' + incoming;
