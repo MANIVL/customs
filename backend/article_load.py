@@ -134,12 +134,23 @@ def _compare_kind(token: str) -> str | None:
     return None
 
 
-def _compare_map(header: list[str]) -> dict[str, int]:
+def _compare_map(header: list[str], data_rows: list[list[str]]) -> dict[str, int]:
     mapping: dict[str, int] = {}
+    hs_candidates: list[int] = []
     for col, token in enumerate(header):
         kind = _compare_kind(token)
+        if kind == "hs_code":
+            hs_candidates.append(col)
+            continue
         if kind and kind not in mapping:
             mapping[kind] = col
+    if hs_candidates:
+        mapping["hs_code"] = max(
+            hs_candidates,
+            key=lambda col: sum(
+                1 for row in data_rows if col < len(row) and _full_hs(row[col])
+            ),
+        )
     return mapping
 
 
@@ -193,7 +204,7 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
         mode = "column"
         sheet_i, col, start, _header = chosen
         rows = grids[sheet_i][1]
-        compared = _compare_map(rows[start - 1] if start else [])
+        compared = _compare_map(rows[start - 1] if start else [], rows[start:])
         for row in rows[start:]:
             code = row[col] if col < len(row) else ""
             if not code or _is_article_header(code):
