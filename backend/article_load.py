@@ -134,6 +134,10 @@ def _compare_kind(token: str) -> str | None:
     return None
 
 
+def _ten_digit_count(rows: list[list[str]], col: int) -> int:
+    return sum(1 for row in rows if col < len(row) and _full_hs(row[col]))
+
+
 def _compare_map(header: list[str], data_rows: list[list[str]]) -> dict[str, int]:
     mapping: dict[str, int] = {}
     hs_candidates: list[int] = []
@@ -145,12 +149,9 @@ def _compare_map(header: list[str], data_rows: list[list[str]]) -> dict[str, int
         if kind and kind not in mapping:
             mapping[kind] = col
     if hs_candidates:
-        mapping["hs_code"] = max(
-            hs_candidates,
-            key=lambda col: sum(
-                1 for row in data_rows if col < len(row) and _full_hs(row[col])
-            ),
-        )
+        best = max(hs_candidates, key=lambda col: _ten_digit_count(data_rows, col))
+        if _ten_digit_count(data_rows, best):
+            mapping["hs_code"] = best
     return mapping
 
 
@@ -215,10 +216,12 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
             items.append(_catalog_item(row_data) if row_data else _blank_item(code))
             if row_data is None or code.casefold() in seen_diffs:
                 continue
-            file_values = {
-                key: (row[pos] if pos < len(row) else "")
-                for key, pos in compared.items()
-            }
+            file_values = {}
+            for key, pos in compared.items():
+                value = row[pos] if pos < len(row) else ""
+                if key == "hs_code" and not _full_hs(value):
+                    value = ""
+                file_values[key] = value
             changed = [
                 key
                 for key in _COMPARE_KEYS
