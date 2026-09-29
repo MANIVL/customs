@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260929.2" />
+  <link rel="stylesheet" href="style.css?v=20260929.3" />
 </head>
 <body>
   <header class="topbar">
@@ -186,21 +186,6 @@
             <button id="loadCompareBtn" type="button" class="btn btn-ghost">Сравнение</button>
           </div>
           <div id="loadTableError" class="error-box" style="display:none;"></div>
-          <div id="loadTableMeta" class="article-meta"></div>
-          <div id="loadCompareWrap" class="article-table-wrap" hidden>
-            <table class="article-table load-compare">
-              <thead>
-                <tr>
-                  <th>Артикул</th>
-                  <th>Код товара</th>
-                  <th>Код страны происхождения</th>
-                  <th>Описание группы</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody id="loadCompareRows"></tbody>
-            </table>
-          </div>
         </article>
         <article class="card">
           <div class="card-head">
@@ -300,12 +285,48 @@
     </div>
   </div>
 
+  <div id="diffModal" class="diff-modal" hidden>
+    <div class="diff-dialog" role="dialog" aria-modal="true" aria-labelledby="diffTitle">
+      <button id="diffCloseBtn" type="button" class="diff-close" aria-label="Закрыть">×</button>
+      <header class="diff-head">
+        <h3 id="diffTitle">Расхождения</h3>
+      </header>
+      <p id="diffMeta" class="diff-meta"></p>
+      <div id="diffError" class="error-box" style="display:none;"></div>
+      <div class="diff-layout">
+        <div class="article-table-wrap diff-table-wrap">
+          <table class="article-table load-compare">
+            <thead>
+              <tr>
+                <th>Артикул</th>
+                <th>Код товара</th>
+                <th>Код страны происхождения</th>
+                <th>Описание группы</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="loadCompareRows"></tbody>
+          </table>
+        </div>
+        <form id="diffForm" class="diff-form" hidden>
+          <h4 id="diffFormTitle">Изменить</h4>
+          <div id="diffFields" class="article-fields"></div>
+          <div id="diffFormError" class="error-box" style="display:none;"></div>
+          <div class="article-form-actions">
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+            <button id="diffFormCancel" type="button" class="btn btn-ghost">Отмена</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
   <footer>
     <div class="wrap">
       ТаможенФормат · Веб‑версия
     </div>
   </footer>
 
-  <script src="app.js?v=20260929.2"></script>
+  <script src="app.js?v=20260929.3"></script>
 </body>
 </html>

@@ -603,12 +603,33 @@
     button: document.getElementById('loadTableBtn'),
     compare: document.getElementById('loadCompareBtn'),
     error: document.getElementById('loadTableError'),
-    meta: document.getElementById('loadTableMeta'),
-    wrap: document.getElementById('loadCompareWrap'),
+  };
+  var diffEl = {
+    modal: document.getElementById('diffModal'),
+    close: document.getElementById('diffCloseBtn'),
+    meta: document.getElementById('diffMeta'),
+    error: document.getElementById('diffError'),
     rows: document.getElementById('loadCompareRows'),
+    form: document.getElementById('diffForm'),
+    title: document.getElementById('diffFormTitle'),
+    fields: document.getElementById('diffFields'),
+    formError: document.getElementById('diffFormError'),
+    cancel: document.getElementById('diffFormCancel'),
   };
   var compareDiffs = [];
+  var diffEditingId = null;
   var COMPARE_KEYS = ['hs_code', 'origin_code', 'group_description'];
+  var DIFF_FIELDS = [
+    { key: 'article', label: 'Артикул' },
+    { key: 'description', label: 'Описание товара' },
+    { key: 'origin_code', label: 'Код страны происхождения' },
+    { key: 'hs_code', label: 'Код товара' },
+    { key: 'group_description', label: 'Описание группы' },
+    { key: 'manufacturer', label: 'Наименование фирмы-изготовителя' },
+    { key: 'brand', label: 'Марка' },
+    { key: 'model', label: 'Модель' },
+    { key: 'extra_code', label: 'Доп. код' },
+  ];
 
   function showLoadTableError(msg) {
     if (!loadTableEl.error) return;
@@ -694,9 +715,110 @@
     return td;
   }
 
+  function showDiffError(msg) {
+    if (!diffEl.error) return;
+    diffEl.error.textContent = msg;
+    diffEl.error.style.display = 'block';
+  }
+
+  function clearDiffError() {
+    if (!diffEl.error) return;
+    diffEl.error.style.display = 'none';
+    diffEl.error.textContent = '';
+  }
+
+  function showDiffFormError(msg) {
+    if (!diffEl.formError) return;
+    diffEl.formError.textContent = msg;
+    diffEl.formError.style.display = 'block';
+  }
+
+  function clearDiffFormError() {
+    if (!diffEl.formError) return;
+    diffEl.formError.style.display = 'none';
+    diffEl.formError.textContent = '';
+  }
+
+  function closeDiffForm() {
+    diffEditingId = null;
+    if (diffEl.form) diffEl.form.hidden = true;
+    if (diffEl.fields) diffEl.fields.innerHTML = '';
+    clearDiffFormError();
+    markDiffRow();
+  }
+
+  function closeDiffWindow() {
+    closeDiffForm();
+    if (diffEl.modal) diffEl.modal.hidden = true;
+  }
+
+  function markDiffRow() {
+    if (!diffEl.rows) return;
+    diffEl.rows.querySelectorAll('tr').forEach(function (tr) {
+      tr.classList.toggle('diff-row-active', !!(diffEditingId && String(tr.dataset.id) === String(diffEditingId)));
+    });
+  }
+
+  function openDiffForm(diff) {
+    clearDiffFormError();
+    diffEditingId = diff.id;
+    var item = Object.assign({}, diff.db);
+    COMPARE_KEYS.forEach(function (key) {
+      var incoming = diff.file && diff.file[key];
+      if (incoming && incoming !== (diff.db[key] || '')) item[key] = incoming;
+    });
+    if (diffEl.title) diffEl.title.textContent = diff.article || 'Изменить';
+    diffEl.fields.innerHTML = '';
+    DIFF_FIELDS.forEach(function (field) {
+      var wrap = document.createElement('label');
+      wrap.className = 'article-field';
+      var caption = document.createElement('span');
+      caption.textContent = field.label;
+      var longText = field.key === 'description' || field.key === 'group_description';
+      if (longText) wrap.classList.add('article-field-wide');
+      var input = document.createElement(longText ? 'textarea' : 'input');
+      input.name = field.key;
+      input.value = item[field.key] ? String(item[field.key]).toUpperCase() : '';
+      if (field.key === 'article') input.required = true;
+      input.addEventListener('input', function () {
+        var start = input.selectionStart;
+        var end = input.selectionEnd;
+        var upper = input.value.toUpperCase();
+        if (upper === input.value) return;
+        input.value = upper;
+        try { input.setSelectionRange(start, end); } catch (err) {}
+      });
+      if (field.key === 'hs_code') {
+        var originalCode = input.value.trim();
+        var lookupTimer = null;
+        input.addEventListener('input', function () {
+          clearTimeout(lookupTimer);
+          var code = input.value.trim();
+          if (!code || code === originalCode) return;
+          lookupTimer = setTimeout(function () {
+            fetch(API + '/api/articles/common-description?hs_code=' + encodeURIComponent(code))
+              .then(function (res) { return res.ok ? res.json() : null; })
+              .then(function (data) {
+                if (!data || !data.description || input.value.trim() !== code) return;
+                var desc = diffEl.fields.querySelector('[name="description"]');
+                if (desc) desc.value = String(data.description).toUpperCase();
+              })
+              .catch(function () {});
+          }, 300);
+        });
+      }
+      wrap.appendChild(caption);
+      wrap.appendChild(input);
+      diffEl.fields.appendChild(wrap);
+    });
+    diffEl.form.hidden = false;
+    markDiffRow();
+  }
+
   function renderCompare() {
-    if (!loadTableEl.rows || !loadTableEl.wrap) return;
-    loadTableEl.rows.innerHTML = '';
+    if (!diffEl.rows || !diffEl.modal) return;
+    diffEl.rows.innerHTML = '';
+    if (!compareDiffs.length) closeDiffForm();
     compareDiffs.forEach(function (diff) {
       var tr = document.createElement('tr');
       tr.dataset.id = diff.id;
@@ -709,37 +831,25 @@
       button.type = 'button';
       button.className = 'btn btn-ghost';
       button.textContent = 'Изменить';
-      button.addEventListener('click', function () {
-        var item = Object.assign({ id: diff.id }, diff.db);
-        COMPARE_KEYS.forEach(function (key) {
-          var incoming = diff.file && diff.file[key];
-          if (incoming && incoming !== (diff.db[key] || '')) item[key] = incoming;
-        });
-        openArticleForm(item);
-        if (articleEl.cancel) articleEl.cancel.textContent = 'Отмена';
-      });
+      button.addEventListener('click', function () { openDiffForm(diff); });
       action.appendChild(button);
       tr.appendChild(action);
-      loadTableEl.rows.appendChild(tr);
+      diffEl.rows.appendChild(tr);
     });
-    loadTableEl.wrap.hidden = compareDiffs.length === 0;
+    markDiffRow();
+    diffEl.modal.hidden = false;
   }
 
-  function applySavedToCompare(saved) {
-    if (!saved || saved.id == null) return;
+  function dropSavedDiff(savedId) {
     compareDiffs = compareDiffs.filter(function (diff) {
-      if (String(diff.id) !== String(saved.id)) return true;
-      Object.keys(diff.db || {}).forEach(function (key) {
-        if (saved[key] != null) diff.db[key] = saved[key];
-      });
-      return COMPARE_KEYS.some(function (key) {
-        var incoming = (diff.file && diff.file[key]) || '';
-        return incoming && incoming !== ((diff.db && diff.db[key]) || '');
-      });
+      return String(diff.id) !== String(savedId);
     });
-    if (!compareDiffs.length && loadTableEl.meta) {
-      loadTableEl.meta.textContent = 'Расхождений не осталось.';
+    if (diffEl.meta) {
+      diffEl.meta.textContent = compareDiffs.length
+        ? 'Расхождений: ' + compareDiffs.length + '.'
+        : 'Расхождений не осталось.';
     }
+    closeDiffForm();
     renderCompare();
   }
 
@@ -797,19 +907,59 @@
         if (!xhr) return;
         var data = xhr.response || {};
         compareDiffs = data.diffs || [];
-        renderCompare();
-        if (!data.compared_fields || !data.compared_fields.length) {
-          loadTableEl.meta.textContent = 'В файле нет колонок кода товара, страны происхождения или описания группы.';
-        } else if (!compareDiffs.length) {
-          loadTableEl.meta.textContent = 'Расхождений нет.';
-        } else {
-          loadTableEl.meta.textContent = 'Расхождений: ' + compareDiffs.length + '. В форме подставлены значения из файла.';
+        clearDiffError();
+        closeDiffForm();
+        if (diffEl.meta) {
+          if (!data.compared_fields || !data.compared_fields.length) {
+            diffEl.meta.textContent = 'В файле нет колонок кода товара, страны происхождения или описания группы.';
+          } else if (!compareDiffs.length) {
+            diffEl.meta.textContent = 'Расхождений нет.';
+          } else {
+            diffEl.meta.textContent = 'Расхождений: ' + compareDiffs.length + '. В форме подставлены значения из файла.';
+          }
         }
+        renderCompare();
       } catch (err) {
         showLoadTableError(err.message || 'Не удалось сравнить файл с базой');
       } finally {
         loadTableEl.compare.disabled = false;
       }
+    });
+  }
+
+  if (diffEl.close) diffEl.close.addEventListener('click', closeDiffWindow);
+  if (diffEl.modal) {
+    diffEl.modal.addEventListener('click', function (event) {
+      if (event.target === diffEl.modal) closeDiffWindow();
+    });
+  }
+  if (diffEl.cancel) diffEl.cancel.addEventListener('click', closeDiffForm);
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape' && diffEl.modal && !diffEl.modal.hidden) closeDiffWindow();
+  });
+  if (diffEl.form) {
+    diffEl.form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      if (diffEditingId == null) return;
+      clearDiffFormError();
+      var payload = {};
+      diffEl.fields.querySelectorAll('input, textarea').forEach(function (input) {
+        payload[input.name] = input.value.toUpperCase();
+      });
+      var savedId = diffEditingId;
+      fetch(API + '/api/articles/' + savedId, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(function (res) {
+        if (!res.ok) return readErrorBody(res);
+        return res.json();
+      }).then(function () {
+        dropSavedDiff(savedId);
+        loadArticles(articleState.page);
+      }).catch(function (err) {
+        showDiffFormError(err.message || 'Не удалось сохранить артикул');
+      });
     });
   }
 
@@ -908,7 +1058,6 @@
   function closeArticleForm() {
     articleEl.modal.hidden = true;
     articleEditingId = null;
-    if (articleEl.cancel) articleEl.cancel.textContent = 'Закрыть';
     markEditingRow();
   }
 
@@ -1360,8 +1509,7 @@
       }).then(function (res) {
         if (!res.ok) return readErrorBody(res);
         return res.json();
-      }).then(function (saved) {
-        applySavedToCompare(saved);
+      }).then(function () {
         closeArticleForm();
         loadArticles(articleState.page);
       }).catch(function (err) {
