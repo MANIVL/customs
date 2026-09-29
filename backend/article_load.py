@@ -114,6 +114,45 @@ def _best_column(
     return sheet_i, col, 0, False
 
 
+_COMPARE_KEYS = ("hs_code", "origin_code", "group_description")
+
+
+def _compare_kind(token: str) -> str | None:
+    norm = " ".join(token.casefold().split())
+    if not norm or "описание товара" in norm:
+        return None
+    if "описание группы" in norm or norm == "описание":
+        return "group_description"
+    if "происхожд" in norm or norm in {"origin", "origin code", "country", "country of origin"}:
+        return "origin_code"
+    if "код страны" in norm:
+        return "origin_code"
+    if "код товара" in norm or norm in {"hs code", "hs", "коды", "hscode", "hs-code"}:
+        return "hs_code"
+    if "hs" in norm and "code" in norm:
+        return "hs_code"
+    return None
+
+
+def _compare_map(header: list[str]) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for col, token in enumerate(header):
+        kind = _compare_kind(token)
+        if kind and kind not in mapping:
+            mapping[kind] = col
+    return mapping
+
+
+def _blank_item(code: str) -> dict[str, str]:
+    item = {key: "" for key in articles.FIELD_KEYS}
+    item["article"] = code
+    return item
+
+
+def _catalog_item(row_data: dict[str, Any]) -> dict[str, str]:
+    return {key: row_data[key] for key in articles.FIELD_KEYS}
+
+
 def build_load_table(content: bytes, filename: str | None = None) -> dict[str, Any]:
     if not content:
         raise ValueError("Файл пустой")
@@ -122,8 +161,10 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
         raise ValueError("В файле нет данных")
     index = articles.index_by_article()
     chosen = _best_column(grids, index)
-    found: list[dict[str, str]] = []
-    missing: list[str] = []
+    items: list[dict[str, str]] = []
+    diffs: list[dict[str, Any]] = []
+    seen_diffs: set[str] = set()
+    compared: dict[str, int] = {}
     if chosen is None:
         mode = "scan"
         for _title, rows in grids:
@@ -134,25 +175,53 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
                     row_data = index.get(token.casefold())
                     if row_data is None:
                         continue
-                    found.append({key: row_data[key] for key in articles.FIELD_KEYS})
+                    items.append(_catalog_item(row_data))
     else:
         mode = "column"
         sheet_i, col, start, _header = chosen
-        codes = _column_values(grids[sheet_i][1], col, start, index)
-        for code in codes:
-            row_data = index.get(code.casefold())
-            if row_data is None:
-                missing.append(code)
+        rows = grids[sheet_i][1]
+        compared = _compare_map(rows[start - 1] if start else [])
+        for row in rows[start:]:
+            code = row[col] if col < len(row) else ""
+            if not code or _is_article_header(code):
                 continue
-            found.append({key: row_data[key] for key in articles.FIELD_KEYS})
+            if code.casefold() not in index and not _looks_like_article(code):
+                continue
+            row_data = index.get(code.casefold())
+            items.append(_catalog_item(row_data) if row_data else _blank_item(code))
+            if row_data is None or code.casefold() in seen_diffs:
+                continue
+            file_values = {
+                key: (row[pos] if pos < len(row) else "")
+                for key, pos in compared.items()
+            }
+            changed = [
+                key
+                for key in _COMPARE_KEYS
+                if file_values.get(key) and file_values.get(key) != (row_data[key] or "")
+            ]
+            if not changed:
+                continue
+            seen_diffs.add(code.casefold())
+            diffs.append(
+                {
+                    "id": row_data["id"],
+                    "article": row_data["article"],
+                    "db": _catalog_item(row_data),
+                    "file": {key: file_values.get(key, "") for key in _COMPARE_KEYS},
+                    "fields": changed,
+                }
+            )
+    found_count = sum(1 for item in items if any(item[key] for key in articles.FIELD_KEYS if key != "article"))
     return {
         "mode": mode,
         "sheet": grids[chosen[0]][0] if chosen else "",
-        "total": len(codes) if chosen else len(found),
-        "found_count": len(found),
-        "missing": missing,
-        "items": found,
+        "total": len(items),
+        "found_count": found_count,
+        "items": items,
         "fields": articles.field_meta(),
+        "diffs": diffs,
+        "compared_fields": list(compared),
     }
 
 
@@ -172,14 +241,6 @@ def load_table_xlsx(result: dict[str, Any]) -> bytes:
         letter = column[0].column_letter
         width = max(12, min(48, max(len(str(cell.value or "")) for cell in column) + 2))
         sheet.column_dimensions[letter].width = width
-    missing = result.get("missing") or []
-    if missing:
-        extra = book.create_sheet("Не найдены")
-        extra.append(["Артикул"])
-        extra["A1"].font = Font(bold=True)
-        for code in missing:
-            extra.append([code])
-        extra.column_dimensions["A"].width = 28
     buffer = io.BytesIO()
     book.save(buffer)
     return buffer.getvalue()

@@ -601,14 +601,14 @@
   var loadTableEl = {
     file: document.getElementById('loadTableFile'),
     button: document.getElementById('loadTableBtn'),
-    download: document.getElementById('loadTableDownload'),
+    compare: document.getElementById('loadCompareBtn'),
     error: document.getElementById('loadTableError'),
     meta: document.getElementById('loadTableMeta'),
-    missing: document.getElementById('loadTableMissing'),
-    wrap: document.getElementById('loadTableWrap'),
-    head: document.getElementById('loadTableHead'),
-    rows: document.getElementById('loadTableRows'),
+    wrap: document.getElementById('loadCompareWrap'),
+    rows: document.getElementById('loadCompareRows'),
   };
+  var compareDiffs = [];
+  var COMPARE_KEYS = ['hs_code', 'origin_code', 'group_description'];
 
   function showLoadTableError(msg) {
     if (!loadTableEl.error) return;
@@ -622,101 +622,193 @@
     loadTableEl.error.textContent = '';
   }
 
-  function renderLoadTable(data) {
-    var fields = data.fields || [];
-    var items = data.items || [];
-    var missing = data.missing || [];
-    loadTableEl.head.innerHTML = '';
-    loadTableEl.rows.innerHTML = '';
-    var headRow = document.createElement('tr');
-    fields.forEach(function (field) {
-      var th = document.createElement('th');
-      th.textContent = field.label;
-      headRow.appendChild(th);
-    });
-    loadTableEl.head.appendChild(headRow);
-    items.forEach(function (item) {
-      var tr = document.createElement('tr');
-      fields.forEach(function (field) {
-        var td = document.createElement('td');
-        td.textContent = item[field.key] || '';
-        tr.appendChild(td);
-      });
-      loadTableEl.rows.appendChild(tr);
-    });
-    loadTableEl.wrap.hidden = items.length === 0;
-    var found = data.found_count || 0;
-    var total = data.total || found;
-    if (data.mode === 'scan') {
-      loadTableEl.meta.textContent = 'В файле нет отдельной колонки артикула. Найдено в базе: ' + found + '.';
-    } else if (missing.length) {
-      loadTableEl.meta.textContent = 'В базе найдено ' + found + ' из ' + total + '.';
-    } else {
-      loadTableEl.meta.textContent = 'Все ' + found + ' артикулов найдены в базе.';
-    }
-    if (missing.length) {
-      var shown = missing.slice(0, 40);
-      loadTableEl.missing.hidden = false;
-      loadTableEl.missing.textContent = 'Нет в базе: ' + shown.join(', ') + (missing.length > shown.length ? '…' : '');
-    } else {
-      loadTableEl.missing.hidden = true;
-      loadTableEl.missing.textContent = '';
-    }
-    loadTableEl.download.hidden = found === 0 && missing.length === 0;
+  function selectedLoadFile() {
+    return loadTableEl.file && loadTableEl.file.files && loadTableEl.file.files[0];
   }
 
-  async function requestLoadTable(download) {
-    clearLoadTableError();
-    var file = loadTableEl.file && loadTableEl.file.files && loadTableEl.file.files[0];
-    if (!file) {
-      showLoadTableError('Выберите файл Excel.');
-      return null;
+  function saveLoadTableBlob(blob) {
+    var link = document.createElement('a');
+    var objectUrl = URL.createObjectURL(blob);
+    link.href = objectUrl;
+    link.download = 'загрузочная таблица.xlsx';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
+  }
+
+  function postLoadTable(download, onProgress) {
+    return new Promise(function (resolve, reject) {
+      var file = selectedLoadFile();
+      if (!file) {
+        showLoadTableError('Выберите файл Excel.');
+        resolve(null);
+        return;
+      }
+      var fd = new FormData();
+      fd.append('file', file);
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', API + '/api/articles/load-table' + (download ? '?download=1' : ''));
+      xhr.responseType = download ? 'blob' : 'json';
+      if (download && xhr.upload) {
+        xhr.upload.onprogress = function (event) {
+          if (!event.lengthComputable || !onProgress) return;
+          onProgress(Math.min(40, Math.round(event.loaded / event.total * 40)));
+        };
+      }
+      xhr.onload = function () {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr);
+          return;
+        }
+        var fail = function (message) { reject(new Error(message || 'Не удалось собрать таблицу')); };
+        if (download && xhr.response) {
+          var reader = new FileReader();
+          reader.onload = function () {
+            try { fail(JSON.parse(reader.result).error); }
+            catch (err) { fail(); }
+          };
+          reader.readAsText(xhr.response);
+          return;
+        }
+        fail(xhr.response && xhr.response.error);
+      };
+      xhr.onerror = function () { reject(new Error('Сайт с базой артикулов недоступен')); };
+      xhr.send(fd);
+    });
+  }
+
+  function compareCell(diff, key) {
+    var td = document.createElement('td');
+    var incoming = (diff.file && diff.file[key]) || '';
+    var current = (diff.db && diff.db[key]) || '';
+    if (!incoming || incoming === current) return td;
+    var fileLine = document.createElement('span');
+    fileLine.className = 'compare-file';
+    fileLine.textContent = 'файл: ' + incoming;
+    var dbLine = document.createElement('span');
+    dbLine.className = 'compare-db';
+    dbLine.textContent = 'база: ' + (current || '—');
+    td.appendChild(fileLine);
+    td.appendChild(dbLine);
+    return td;
+  }
+
+  function renderCompare() {
+    if (!loadTableEl.rows || !loadTableEl.wrap) return;
+    loadTableEl.rows.innerHTML = '';
+    compareDiffs.forEach(function (diff) {
+      var tr = document.createElement('tr');
+      tr.dataset.id = diff.id;
+      var articleCell = document.createElement('td');
+      articleCell.textContent = diff.article || '';
+      tr.appendChild(articleCell);
+      COMPARE_KEYS.forEach(function (key) { tr.appendChild(compareCell(diff, key)); });
+      var action = document.createElement('td');
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn btn-ghost';
+      button.textContent = 'Изменить';
+      button.addEventListener('click', function () {
+        var item = Object.assign({ id: diff.id }, diff.db);
+        COMPARE_KEYS.forEach(function (key) {
+          var incoming = diff.file && diff.file[key];
+          if (incoming && incoming !== (diff.db[key] || '')) item[key] = incoming;
+        });
+        openArticleForm(item);
+        if (articleEl.cancel) articleEl.cancel.textContent = 'Отмена';
+      });
+      action.appendChild(button);
+      tr.appendChild(action);
+      loadTableEl.rows.appendChild(tr);
+    });
+    loadTableEl.wrap.hidden = compareDiffs.length === 0;
+  }
+
+  function applySavedToCompare(saved) {
+    if (!saved || saved.id == null) return;
+    compareDiffs = compareDiffs.filter(function (diff) {
+      if (String(diff.id) !== String(saved.id)) return true;
+      Object.keys(diff.db || {}).forEach(function (key) {
+        if (saved[key] != null) diff.db[key] = saved[key];
+      });
+      return COMPARE_KEYS.some(function (key) {
+        var incoming = (diff.file && diff.file[key]) || '';
+        return incoming && incoming !== ((diff.db && diff.db[key]) || '');
+      });
+    });
+    if (!compareDiffs.length && loadTableEl.meta) {
+      loadTableEl.meta.textContent = 'Расхождений не осталось.';
     }
-    var fd = new FormData();
-    fd.append('file', file);
-    var url = API + '/api/articles/load-table' + (download ? '?download=1' : '');
-    var res = await fetch(url, { method: 'POST', body: fd });
-    if (!res.ok) {
-      var data = await res.json().catch(function () { return {}; });
-      throw new Error((data && data.error) || 'Не удалось собрать таблицу');
-    }
-    return res;
+    renderCompare();
   }
 
   if (loadTableEl.button) {
     loadTableEl.button.addEventListener('click', async function () {
-      loadTableEl.button.disabled = true;
+      clearLoadTableError();
+      if (!selectedLoadFile()) {
+        showLoadTableError('Выберите файл Excel.');
+        return;
+      }
+      var button = loadTableEl.button;
+      var progress = 0;
+      button.disabled = true;
+      button.textContent = '0%';
+      var timer = setInterval(function () {
+        if (progress < 90) {
+          progress += 2;
+          button.textContent = progress + '%';
+        }
+      }, 200);
       try {
-        var res = await requestLoadTable(false);
-        if (!res) return;
-        renderLoadTable(await res.json());
+        var xhr = await postLoadTable(true, function (value) {
+          if (value > progress) {
+            progress = value;
+            button.textContent = progress + '%';
+          }
+        });
+        if (!xhr) return;
+        clearInterval(timer);
+        timer = null;
+        button.textContent = '100%';
+        saveLoadTableBlob(xhr.response);
       } catch (err) {
         showLoadTableError(err.message || 'Не удалось собрать таблицу');
       } finally {
-        loadTableEl.button.disabled = false;
+        if (timer) clearInterval(timer);
+        setTimeout(function () {
+          button.textContent = 'Собрать таблицу';
+          button.disabled = false;
+        }, 400);
       }
     });
   }
 
-  if (loadTableEl.download) {
-    loadTableEl.download.addEventListener('click', async function () {
-      loadTableEl.download.disabled = true;
+  if (loadTableEl.compare) {
+    loadTableEl.compare.addEventListener('click', async function () {
+      clearLoadTableError();
+      if (!selectedLoadFile()) {
+        showLoadTableError('Выберите файл Excel.');
+        return;
+      }
+      loadTableEl.compare.disabled = true;
       try {
-        var res = await requestLoadTable(true);
-        if (!res) return;
-        var blob = await res.blob();
-        var link = document.createElement('a');
-        var objectUrl = URL.createObjectURL(blob);
-        link.href = objectUrl;
-        link.download = 'загрузочная таблица.xlsx';
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        URL.revokeObjectURL(objectUrl);
+        var xhr = await postLoadTable(false);
+        if (!xhr) return;
+        var data = xhr.response || {};
+        compareDiffs = data.diffs || [];
+        renderCompare();
+        if (!data.compared_fields || !data.compared_fields.length) {
+          loadTableEl.meta.textContent = 'В файле нет колонок кода товара, страны происхождения или описания группы.';
+        } else if (!compareDiffs.length) {
+          loadTableEl.meta.textContent = 'Расхождений нет.';
+        } else {
+          loadTableEl.meta.textContent = 'Расхождений: ' + compareDiffs.length + '. В форме подставлены значения из файла.';
+        }
       } catch (err) {
-        showLoadTableError(err.message || 'Не удалось скачать таблицу');
+        showLoadTableError(err.message || 'Не удалось сравнить файл с базой');
       } finally {
-        loadTableEl.download.disabled = false;
+        loadTableEl.compare.disabled = false;
       }
     });
   }
@@ -816,6 +908,7 @@
   function closeArticleForm() {
     articleEl.modal.hidden = true;
     articleEditingId = null;
+    if (articleEl.cancel) articleEl.cancel.textContent = 'Закрыть';
     markEditingRow();
   }
 
@@ -1267,7 +1360,8 @@
       }).then(function (res) {
         if (!res.ok) return readErrorBody(res);
         return res.json();
-      }).then(function () {
+      }).then(function (saved) {
+        applySavedToCompare(saved);
         closeArticleForm();
         loadArticles(articleState.page);
       }).catch(function (err) {

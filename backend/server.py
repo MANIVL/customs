@@ -402,7 +402,10 @@ async def sync_articles(request: Request):
 
 
 @app.post("/api/articles/load-table")
-async def article_load_table(file: UploadFile = File(...), download: int = Query(0)):
+async def article_load_table(
+    file: UploadFile = File(...),
+    download: int = Query(0),
+):
     content = await file.read()
     try:
         result = await run_in_threadpool(article_load.build_load_table, content, file.filename)
@@ -421,7 +424,12 @@ async def article_load_table(file: UploadFile = File(...), download: int = Query
                 "Content-Disposition": f"attachment; filename=\"load-table.xlsx\"; filename*=UTF-8''{quoted}"
             },
         )
-    return result
+    return {
+        "diffs": result["diffs"],
+        "compared_fields": result["compared_fields"],
+        "found_count": result["found_count"],
+        "total": result["total"],
+    }
 
 
 @app.get("/api/articles/{article_id}")

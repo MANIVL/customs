@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260929.1" />
+  <link rel="stylesheet" href="style.css?v=20260929.2" />
 </head>
 <body>
   <header class="topbar">
@@ -177,21 +177,28 @@
             <h2>Загрузочная таблица</h2>
           </div>
           <p class="article-lead">
-            Загрузите Excel со списком товаров. Программа найдёт в нём артикулы
-            и соберёт таблицу с полями каталога.
+            Загрузите Excel со списком товаров. Файл с полями каталога скачается сам.
+            Если артикула нет в базе, в таблице останется только его номер.
           </p>
           <div class="article-toolbar">
             <input id="loadTableFile" type="file" accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
             <button id="loadTableBtn" type="button" class="btn btn-primary">Собрать таблицу</button>
-            <button id="loadTableDownload" type="button" class="btn btn-ghost" hidden>Скачать Excel</button>
+            <button id="loadCompareBtn" type="button" class="btn btn-ghost">Сравнение</button>
           </div>
           <div id="loadTableError" class="error-box" style="display:none;"></div>
           <div id="loadTableMeta" class="article-meta"></div>
-          <div id="loadTableMissing" class="article-missing" hidden></div>
-          <div id="loadTableWrap" class="article-table-wrap" hidden>
-            <table class="article-table load-table">
-              <thead id="loadTableHead"></thead>
-              <tbody id="loadTableRows"></tbody>
+          <div id="loadCompareWrap" class="article-table-wrap" hidden>
+            <table class="article-table load-compare">
+              <thead>
+                <tr>
+                  <th>Артикул</th>
+                  <th>Код товара</th>
+                  <th>Код страны происхождения</th>
+                  <th>Описание группы</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="loadCompareRows"></tbody>
             </table>
           </div>
         </article>
@@ -299,6 +306,6 @@
     </div>
   </footer>
 
-  <script src="app.js?v=20260929.1"></script>
+  <script src="app.js?v=20260929.2"></script>
 </body>
 </html>

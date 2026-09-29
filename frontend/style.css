@@ -391,6 +391,20 @@ footer {
 .article-toolbar input[type="file"] {
   flex: 1 1 220px;
 }
+#loadTableBtn {
+  min-width: 9.5rem;
+}
+.load-compare td {
+  white-space: normal;
+  vertical-align: top;
+}
+.load-compare .compare-file,
+.load-compare .compare-db {
+  display: block;
+}
+.load-compare .compare-db {
+  color: var(--color-text-muted, var(--color-text));
+}
 .article-lead {
   margin: 0 0 12px;
   color: var(--color-text-muted, var(--color-text));
