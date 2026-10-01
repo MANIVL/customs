@@ -1144,7 +1144,9 @@ def build_fill_protocol(
         )
 
     no_art = [(no, r) for no, r in numbered if _protocol_empty(r.get("article"))]
-    if no_art:
+    if no_art and len(no_art) == len(numbered):
+        notes.append("Артикул в файле не найден — в шаблоне эти ячейки оставлены пустыми.")
+    elif no_art:
         msg = "нет артикула — в шаблоне пустая ячейка"
         errors.append("Без артикула: " + _fmt_pos_list(no_art) + ".")
         add_finding(no_art, severity="error", code="no_article", field="article", message=msg)

@@ -150,6 +150,11 @@ SKIP_ROW_MARKERS = (
     "packing:", "measurement:", "order no", "контейнер", "container",
 )
 SUM_FIELDS = frozenset({"qty", "amount", "net_weight", "gross_weight", "cll"})
+# A sheet can be a real invoice with no SKU column. Any of these is enough to keep the rows.
+LINE_FIELDS = frozenset({
+    "article", "name", "qty", "price", "amount",
+    "net_weight", "gross_weight", "cll", "tariff_code",
+})
 MAX_EXTRACT_ROWS = 1500
 _CATALOG_NAME_MARKERS = (
     "прайс", "каталог", "справочник", "pricelist", "price list",
@@ -171,12 +176,13 @@ SYSTEM_PROMPT = """Ты помощник по таможенным Excel-док�
 5) Столбцы только с «шт», «кг», «кор», «RMB», «CNY», «USD» — это unit/валюта, НЕ price/amount/qty.
    Если рядом с валютой есть число (RMB | 345.6) — price/amount = столбец с ЧИСЛОМ.
 6) На packing list мапь net_weight / gross_weight / cll (места/кор) и обязательно article+name, если они есть в примерах.
-7) data_start_row — первая строка с реальным артикулом (не «артикул», не категория, не контейнер).
+7) data_start_row — первая строка товара (не заголовок, не «1 2 3», не категория, не «итого»).
 8) PO/NO, Order No, order_32_26 — это номер заказа, НЕ article. Article = Item NO / SKU (E36124-CP).
 9) Кол-во (qty) обычно целые 3, 60, 102; Цена (price) — с копейками 618.42; amount ≈ qty × price. Не путай эти столбцы.
 10) «Price Terms:», «Payment Terms:», «Country of Origin:», «Currency:» — поля шапки документа, НЕ заголовки таблицы.
 11) «Общий гросс» / total gross — не net_weight и не price; строковый гросс/нетто бери из «Гросс вес» / «Нетто вес».
-12) Ответ — ТОЛЬКО JSON-массив (без markdown):
+12) Артикула в файле может не быть. Тогда article = null. name, qty, price, amount, net_weight, gross_weight всё равно сопоставь: пустые поля останутся пустыми, строки без артикула переносятся.
+13) Ответ — ТОЛЬКО JSON-массив (без markdown):
 [{"sheet":"имя","header_row":N,"data_start_row":M,"mapping":{"article":2,"name":3,"qty":4,"price":9,"amount":12}}]
 col в mapping — 1-based номер столбца Excel.
 """
@@ -728,6 +734,8 @@ def _guess_data_start_row(ws: Worksheet, header_row: int, mapping: dict[str, int
     for r in range(header_row + 1, max_row):
         art = ws.cell(r, art_col).value if art_col else None
         name = ws.cell(r, name_col).value if name_col else None
+        if not art_col and name_col and _looks_like_name(name) and not engine.is_summary_item(None, name):
+            return r
         if art_col and _looks_like_article(art):
             return r
         if name_col and _looks_like_name(name) and not _looks_like_article(art):
@@ -969,10 +977,13 @@ def _absorb_detail_rows(ws: Worksheet, item_row: int, rec: dict, mapping: dict[s
                 rec["name"] = raw if isinstance(raw, str) else text
 
 
+def _mapping_has_lines(mapping: dict | None) -> bool:
+    return bool(mapping) and any(key in mapping for key in LINE_FIELDS)
+
+
 def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
     mapping: dict[str, int] = plan["mapping"]
-    if not mapping or "article" not in mapping:
-        # Without article column we cannot reliably merge shipment lines.
+    if not _mapping_has_lines(mapping):
         return {}
 
     header_row = int(plan.get("header_row") or 1)
@@ -1063,7 +1074,8 @@ def extract_items_from_sheet(ws: Worksheet, plan: dict) -> dict[int, dict]:
             if cert:
                 rec.update(cert)
 
-        _absorb_detail_rows(ws, r, rec, mapping)
+        if "article" in mapping:
+            _absorb_detail_rows(ws, r, rec, mapping)
         if rec.get("amount") in (None, "") and rec.get("qty") not in (None, "") and rec.get("price") not in (None, ""):
             try:
                 rec["amount"] = round(float(rec["qty"]) * float(rec["price"]), 4)
@@ -1254,7 +1266,7 @@ def extract_items_from_workbook_ai(content: bytes, filename: str | None = None) 
     other_list: list[dict[int, dict]] = []
 
     for plan in plans:
-        if not plan.get("mapping") or "article" not in plan["mapping"]:
+        if not _mapping_has_lines(plan.get("mapping")):
             continue
         if plan["sheet"] not in wb.sheetnames:
             continue
