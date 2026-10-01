@@ -261,20 +261,34 @@ def build_load_table(content: bytes, filename: str | None = None, *, compare: bo
                 continue
             row_data = index.get(code.casefold())
             items.append(_catalog_item(row_data) if row_data else _blank_item(code))
-            if row_data is None or code.casefold() in seen_diffs:
+            if code.casefold() in seen_diffs:
                 continue
             file_values = {}
             for key, pos in compared.items():
                 value = row[pos] if pos < len(row) else ""
-                if key == "hs_code" and not _full_hs(value):
+                if row_data is not None and key == "hs_code" and not _full_hs(value):
                     value = ""
                 if key == "origin_code" and value:
                     value = countries.resolve_country(value) or value
                 file_values[key] = value
+            file_compared = {key: file_values.get(key, "") for key in _COMPARE_KEYS}
+            if row_data is None:
+                seen_diffs.add(code.casefold())
+                diffs.append(
+                    {
+                        "id": None,
+                        "article": code,
+                        "missing": True,
+                        "db": _blank_item(code),
+                        "file": file_compared,
+                        "fields": ["missing"],
+                    }
+                )
+                continue
             changed = [
                 key
                 for key in _COMPARE_KEYS
-                if _values_differ(key, file_values.get(key, ""), row_data[key] or "")
+                if _values_differ(key, file_compared.get(key, ""), row_data[key] or "")
             ]
             if not changed:
                 continue
@@ -283,8 +297,9 @@ def build_load_table(content: bytes, filename: str | None = None, *, compare: bo
                 {
                     "id": row_data["id"],
                     "article": row_data["article"],
+                    "missing": False,
                     "db": _catalog_item(row_data),
-                    "file": {key: file_values.get(key, "") for key in _COMPARE_KEYS},
+                    "file": file_compared,
                     "fields": changed,
                 }
             )

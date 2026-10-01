@@ -619,7 +619,7 @@
     cancel: document.getElementById('diffFormCancel'),
   };
   var compareDiffs = [];
-  var diffEditingId = null;
+  var diffEditing = null;
   var COMPARE_KEYS = ['hs_code', 'origin_code', 'group_description'];
   var DIFF_FIELDS = [
     { key: 'article', label: 'Артикул' },
@@ -715,9 +715,40 @@
     });
   }
 
+  function diffRowKey(diff) {
+    if (!diff) return '';
+    return diff.missing ? 'new:' + (diff.article || '') : String(diff.id);
+  }
+
+  function compareSummary(diffs) {
+    var missing = diffs.filter(function (diff) { return diff.missing; }).length;
+    var changed = diffs.length - missing;
+    var parts = [];
+    if (changed) parts.push('Расхождений: ' + changed + '.');
+    if (missing) parts.push('Нет в базе: ' + missing + '.');
+    return parts.join(' ');
+  }
+
+  function fileItem(diff) {
+    var item = { article: diff.article || '' };
+    var file = diff.file || {};
+    COMPARE_KEYS.forEach(function (key) {
+      item[key] = file[key] || '';
+    });
+    return item;
+  }
+
   function compareCell(diff, key) {
     var td = document.createElement('td');
     var incoming = (diff.file && diff.file[key]) || '';
+    if (diff.missing) {
+      if (!incoming) return td;
+      var missingFile = document.createElement('span');
+      missingFile.className = 'compare-file';
+      missingFile.textContent = 'файл: ' + incoming;
+      td.appendChild(missingFile);
+      return td;
+    }
     var current = (diff.db && diff.db[key]) || '';
     if (!incoming || incoming === current) return td;
     if (key === 'hs_code' && !(/^\d{10}$/.test(incoming) && /^\d{10}$/.test(current))) return td;
@@ -757,7 +788,7 @@
   }
 
   function closeDiffForm() {
-    diffEditingId = null;
+    diffEditing = null;
     if (diffEl.form) diffEl.form.hidden = true;
     if (diffEl.fields) diffEl.fields.innerHTML = '';
     clearDiffFormError();
@@ -772,7 +803,7 @@
   function markDiffRow() {
     if (!diffEl.rows) return;
     diffEl.rows.querySelectorAll('tr').forEach(function (tr) {
-      tr.classList.toggle('diff-row-active', !!(diffEditingId && String(tr.dataset.id) === String(diffEditingId)));
+      tr.classList.toggle('diff-row-active', !!(diffEditing && String(tr.dataset.id) === diffRowKey(diffEditing)));
     });
   }
 
@@ -867,9 +898,11 @@
 
   function openDiffForm(diff) {
     clearDiffFormError();
-    diffEditingId = diff.id;
-    var item = diff.db || {};
-    if (diffEl.title) diffEl.title.textContent = diff.article || 'Изменить';
+    diffEditing = diff;
+    var item = diff.missing ? fileItem(diff) : (diff.db || {});
+    if (diffEl.title) diffEl.title.textContent = diff.missing ? 'Добавить' : (diff.article || 'Изменить');
+    var submit = diffEl.form && diffEl.form.querySelector('button[type="submit"]');
+    if (submit) submit.textContent = diff.missing ? 'Добавить' : 'Сохранить';
     diffEl.fields.innerHTML = '';
     DIFF_FIELDS.forEach(function (field) {
       var wrap = document.createElement('label');
@@ -924,16 +957,22 @@
     if (!compareDiffs.length) closeDiffForm();
     compareDiffs.forEach(function (diff) {
       var tr = document.createElement('tr');
-      tr.dataset.id = diff.id;
+      tr.dataset.id = diffRowKey(diff);
       var articleCell = document.createElement('td');
       articleCell.textContent = diff.article || '';
+      if (diff.missing) {
+        var mark = document.createElement('span');
+        mark.className = 'compare-missing';
+        mark.textContent = 'Нет в базе';
+        articleCell.appendChild(mark);
+      }
       tr.appendChild(articleCell);
       COMPARE_KEYS.forEach(function (key) { tr.appendChild(compareCell(diff, key)); });
       var action = document.createElement('td');
       var button = document.createElement('button');
       button.type = 'button';
       button.className = 'btn btn-ghost';
-      button.textContent = 'Изменить';
+      button.textContent = diff.missing ? 'Добавить' : 'Изменить';
       button.addEventListener('click', function () { openDiffForm(diff); });
       action.appendChild(button);
       tr.appendChild(action);
@@ -943,13 +982,13 @@
     diffEl.modal.hidden = false;
   }
 
-  function dropSavedDiff(savedId) {
+  function dropSavedDiff(savedKey) {
     compareDiffs = compareDiffs.filter(function (diff) {
-      return String(diff.id) !== String(savedId);
+      return diffRowKey(diff) !== String(savedKey);
     });
     if (diffEl.meta) {
       diffEl.meta.textContent = compareDiffs.length
-        ? 'Расхождений: ' + compareDiffs.length + '.'
+        ? compareSummary(compareDiffs)
         : 'Расхождений не осталось.';
     }
     closeDiffForm();
@@ -1037,7 +1076,7 @@
           } else if (!compareDiffs.length) {
             diffEl.meta.textContent = 'Расхождений нет.';
           } else {
-            diffEl.meta.textContent = 'Расхождений: ' + compareDiffs.length + '.';
+            diffEl.meta.textContent = compareSummary(compareDiffs);
           }
         }
         renderCompare();
@@ -1066,25 +1105,28 @@
   if (diffEl.form) {
     diffEl.form.addEventListener('submit', function (event) {
       event.preventDefault();
-      if (diffEditingId == null) return;
+      if (!diffEditing) return;
       clearDiffFormError();
       var payload = {};
       diffEl.fields.querySelectorAll('input, textarea').forEach(function (input) {
         payload[input.name] = input.value.toUpperCase();
       });
-      var savedId = diffEditingId;
-      fetch(API + '/api/articles/' + savedId, {
-        method: 'PUT',
+      var editing = diffEditing;
+      var savedKey = diffRowKey(editing);
+      var creating = !!editing.missing;
+      fetch(creating ? API + '/api/articles' : API + '/api/articles/' + editing.id, {
+        method: creating ? 'POST' : 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       }).then(function (res) {
         if (!res.ok) return readErrorBody(res);
         return res.json();
       }).then(function () {
-        dropSavedDiff(savedId);
+        dropSavedDiff(savedKey);
+        if (creating) manufacturerNamesRequest = null;
         loadArticles(articleState.page);
       }).catch(function (err) {
-        showDiffFormError(err.message || 'Не удалось сохранить артикул');
+        showDiffFormError(err.message || (creating ? 'Не удалось добавить артикул' : 'Не удалось сохранить артикул'));
       });
     });
   }
