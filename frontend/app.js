@@ -776,6 +776,86 @@
     });
   }
 
+  var manufacturerNamesRequest = null;
+
+  function loadManufacturerNames() {
+    if (manufacturerNamesRequest) return manufacturerNamesRequest;
+    manufacturerNamesRequest = fetch(API + '/api/articles/values', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ field: 'manufacturer', q: '', filters: {} }),
+    }).then(function (res) {
+      if (!res.ok) return [];
+      return res.json();
+    }).then(function (data) {
+      var seen = {};
+      var names = [];
+      (data && data.values || []).forEach(function (value) {
+        var name = String(value || '').trim().toUpperCase();
+        if (!name || seen[name]) return;
+        seen[name] = true;
+        names.push(name);
+      });
+      return names;
+    }).catch(function () {
+      manufacturerNamesRequest = null;
+      return [];
+    });
+    return manufacturerNamesRequest;
+  }
+
+  function bindManufacturerPicker(input) {
+    var box = document.createElement('span');
+    box.className = 'manufacturer-picker';
+    input.parentNode.insertBefore(box, input);
+    box.appendChild(input);
+    var arrow = document.createElement('button');
+    arrow.type = 'button';
+    arrow.className = 'manufacturer-arrow';
+    arrow.setAttribute('aria-label', 'Выбрать изготовителя из базы');
+    box.appendChild(arrow);
+    var menu = document.createElement('div');
+    menu.className = 'manufacturer-menu';
+    menu.hidden = true;
+    box.appendChild(menu);
+    arrow.addEventListener('click', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!menu.hidden) {
+        menu.hidden = true;
+        return;
+      }
+      document.querySelectorAll('.manufacturer-menu').forEach(function (other) {
+        other.hidden = true;
+      });
+      loadManufacturerNames().then(function (names) {
+        menu.innerHTML = '';
+        if (!names.length) {
+          var empty = document.createElement('div');
+          empty.className = 'manufacturer-empty';
+          empty.textContent = 'В базе пока нет изготовителей';
+          menu.appendChild(empty);
+        }
+        names.forEach(function (name) {
+          var item = document.createElement('button');
+          item.type = 'button';
+          item.className = 'manufacturer-option';
+          item.textContent = name;
+          item.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            input.value = name;
+            menu.hidden = true;
+          });
+          menu.appendChild(item);
+        });
+        menu.hidden = false;
+      });
+    });
+    document.addEventListener('click', function (event) {
+      if (!box.contains(event.target)) menu.hidden = true;
+    });
+  }
+
   function openDiffForm(diff) {
     clearDiffFormError();
     diffEditingId = diff.id;
@@ -822,6 +902,7 @@
       }
       wrap.appendChild(caption);
       wrap.appendChild(input);
+      if (field.key === 'manufacturer') bindManufacturerPicker(input);
       diffEl.fields.appendChild(wrap);
     });
     diffEl.form.hidden = false;
@@ -1066,6 +1147,7 @@
       }
       wrap.appendChild(caption);
       wrap.appendChild(input);
+      if (field.key === 'manufacturer') bindManufacturerPicker(input);
       articleEl.fields.appendChild(wrap);
     });
   }

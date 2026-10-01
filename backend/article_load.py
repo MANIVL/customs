@@ -8,6 +8,7 @@ import openpyxl
 from openpyxl.styles import Font
 
 import articles
+import countries
 import excel_io
 
 # Headers that mark an article column even when none of its codes are in the catalog yet.
@@ -267,6 +268,8 @@ def build_load_table(content: bytes, filename: str | None = None, *, compare: bo
                 value = row[pos] if pos < len(row) else ""
                 if key == "hs_code" and not _full_hs(value):
                     value = ""
+                if key == "origin_code" and value:
+                    value = countries.resolve_country(value) or value
                 file_values[key] = value
             changed = [
                 key
