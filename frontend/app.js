@@ -780,23 +780,24 @@
 
   function loadManufacturerNames() {
     if (manufacturerNamesRequest) return manufacturerNamesRequest;
-    manufacturerNamesRequest = fetch(API + '/api/articles/values', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ field: 'manufacturer', q: '', filters: {} }),
-    }).then(function (res) {
+    manufacturerNamesRequest = fetch(API + '/api/articles/manufacturers').then(function (res) {
       if (!res.ok) return [];
       return res.json();
     }).then(function (data) {
       var seen = {};
-      var names = [];
-      (data && data.values || []).forEach(function (value) {
-        var name = String(value || '').trim().toUpperCase();
+      var items = [];
+      (data && data.items || []).forEach(function (row) {
+        var name = String(row && row.name || '').trim().toUpperCase();
         if (!name || seen[name]) return;
         seen[name] = true;
-        names.push(name);
+        var countries = [];
+        (row.countries || []).forEach(function (code) {
+          var country = String(code || '').trim().toUpperCase();
+          if (country && countries.indexOf(country) < 0) countries.push(country);
+        });
+        items.push({ name: name, countries: countries });
       });
-      return names;
+      return items;
     }).catch(function () {
       manufacturerNamesRequest = null;
       return [];
@@ -828,22 +829,30 @@
       document.querySelectorAll('.manufacturer-menu').forEach(function (other) {
         other.hidden = true;
       });
-      loadManufacturerNames().then(function (names) {
+      loadManufacturerNames().then(function (items) {
         menu.innerHTML = '';
-        if (!names.length) {
+        if (!items.length) {
           var empty = document.createElement('div');
           empty.className = 'manufacturer-empty';
           empty.textContent = 'В базе пока нет изготовителей';
           menu.appendChild(empty);
         }
-        names.forEach(function (name) {
+        items.forEach(function (row) {
           var item = document.createElement('button');
           item.type = 'button';
           item.className = 'manufacturer-option';
-          item.textContent = name;
+          var label = document.createElement('span');
+          label.textContent = row.name;
+          item.appendChild(label);
+          if (row.countries.length) {
+            var country = document.createElement('span');
+            country.className = 'manufacturer-country';
+            country.textContent = ' - ' + row.countries.join(', ');
+            item.appendChild(country);
+          }
           item.addEventListener('click', function (ev) {
             ev.preventDefault();
-            input.value = name;
+            input.value = row.name;
             menu.hidden = true;
           });
           menu.appendChild(item);

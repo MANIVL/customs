@@ -843,6 +843,12 @@ body.article-row-resizing * {
   background: var(--color-primary-highlight);
   color: var(--color-primary);
 }
+.manufacturer-country {
+  color: var(--color-text-muted);
+}
+.manufacturer-option:hover .manufacturer-country {
+  color: var(--color-primary);
+}
 .manufacturer-empty {
   color: var(--color-text-muted);
 }

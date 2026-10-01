@@ -385,6 +385,11 @@ async def article_values(request: Request):
     return {"values": values}
 
 
+@app.get("/api/articles/manufacturers")
+def article_manufacturers():
+    return {"items": articles.manufacturer_options()}
+
+
 @app.get("/api/articles/common-description")
 def common_description(hs_code: str = ""):
     return articles.most_common_description(hs_code)

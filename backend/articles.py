@@ -281,6 +281,32 @@ def distinct_values(field: str, query: str, filters: dict[str, Any] | None = Non
     return values
 
 
+def manufacturer_options() -> list[dict[str, Any]]:
+    """Distinct manufacturers with the origin codes stored beside them."""
+    with _connect() as db:
+        rows = db.execute(
+            """
+            SELECT UPPER(TRIM(manufacturer)) AS name,
+                   UPPER(TRIM(COALESCE(origin_code, ''))) AS country
+            FROM articles
+            WHERE TRIM(COALESCE(manufacturer, '')) != ''
+            GROUP BY 1, 2
+            ORDER BY 1 COLLATE NOCASE, 2 COLLATE NOCASE
+            """
+        ).fetchall()
+    grouped: dict[str, list[str]] = {}
+    order: list[str] = []
+    for row in rows:
+        name = row["name"]
+        country = row["country"]
+        if name not in grouped:
+            grouped[name] = []
+            order.append(name)
+        if country and country not in grouped[name]:
+            grouped[name].append(country)
+    return [{"name": name, "countries": grouped[name]} for name in order]
+
+
 def most_common_description(hs_code: str) -> dict[str, Any]:
     code = str(hs_code or "").strip()
     if not code:
