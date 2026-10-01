@@ -1258,6 +1258,7 @@
         tr.appendChild(buildArticleCell(value || ''));
       });
       var action = buildArticleCell('');
+      action.classList.add('cell-action');
       var btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn btn-ghost';

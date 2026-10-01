@@ -398,6 +398,23 @@ footer {
   font-weight: 600;
 }
 .load-upload input[type="file"] { font-weight: 400; font-size: 13px; }
+.load-upload input[type="file"]::file-selector-button {
+  margin-right: 8px;
+  padding: 8px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: 0.16s ease;
+}
+.load-upload input[type="file"]::file-selector-button:hover {
+  background: var(--color-primary-highlight);
+  border-color: var(--color-primary);
+}
 .load-action { display: flex; flex-direction: column; gap: 8px; }
 .load-action .btn { width: 100%; justify-content: center; }
 @media (max-width: 800px) {
@@ -611,6 +628,19 @@ body.article-row-resizing * {
 .article-table th:last-child,
 .article-table td:last-child {
   border-right: none;
+}
+.article-table td.cell-action,
+.article-table.load-compare td:last-child {
+  text-align: center;
+  vertical-align: middle;
+}
+.article-table td.cell-action .cell-clip {
+  text-align: center;
+  overflow: visible;
+}
+.article-table td.cell-action .btn,
+.article-table.load-compare td:last-child .btn {
+  white-space: nowrap;
 }
 .article-table th:nth-child(3),
 .article-table td:nth-child(3) {
