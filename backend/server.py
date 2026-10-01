@@ -405,10 +405,16 @@ async def sync_articles(request: Request):
 async def article_load_table(
     file: UploadFile = File(...),
     download: int = Query(0),
+    compare: int = Query(0),
 ):
     content = await file.read()
     try:
-        result = await run_in_threadpool(article_load.build_load_table, content, file.filename)
+        result = await run_in_threadpool(
+            article_load.build_load_table,
+            content,
+            file.filename,
+            compare=bool(compare) and not download,
+        )
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=422)
     except RuntimeError as exc:

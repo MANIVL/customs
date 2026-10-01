@@ -378,6 +378,31 @@ footer {
 }
 
 /* === База артикулов === */
+.load-board {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px 18px;
+  align-items: start;
+}
+.load-span { grid-column: 1 / -1; }
+.load-template-btn {
+  width: 100%;
+  justify-content: center;
+  text-decoration: none;
+}
+.load-upload {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.load-upload input[type="file"] { font-weight: 400; font-size: 13px; }
+.load-action { display: flex; flex-direction: column; gap: 8px; }
+.load-action .btn { width: 100%; justify-content: center; }
+@media (max-width: 800px) {
+  .load-board { grid-template-columns: 1fr; }
+}
 .article-toolbar {
   display: flex;
   gap: 8px;

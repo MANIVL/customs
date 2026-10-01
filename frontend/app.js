@@ -600,9 +600,11 @@
 
   var loadTableEl = {
     file: document.getElementById('loadTableFile'),
+    compareFile: document.getElementById('loadCompareFile'),
     button: document.getElementById('loadTableBtn'),
     compare: document.getElementById('loadCompareBtn'),
     error: document.getElementById('loadTableError'),
+    compareError: document.getElementById('loadCompareError'),
   };
   var diffEl = {
     modal: document.getElementById('diffModal'),
@@ -631,20 +633,36 @@
     { key: 'extra_code', label: 'Доп. код' },
   ];
 
+  function showPanelError(box, msg) {
+    if (!box) return;
+    box.textContent = msg;
+    box.style.display = 'block';
+  }
+
+  function clearPanelError(box) {
+    if (!box) return;
+    box.style.display = 'none';
+    box.textContent = '';
+  }
+
   function showLoadTableError(msg) {
-    if (!loadTableEl.error) return;
-    loadTableEl.error.textContent = msg;
-    loadTableEl.error.style.display = 'block';
+    showPanelError(loadTableEl.error, msg);
   }
 
   function clearLoadTableError() {
-    if (!loadTableEl.error) return;
-    loadTableEl.error.style.display = 'none';
-    loadTableEl.error.textContent = '';
+    clearPanelError(loadTableEl.error);
   }
 
-  function selectedLoadFile() {
-    return loadTableEl.file && loadTableEl.file.files && loadTableEl.file.files[0];
+  function showCompareError(msg) {
+    showPanelError(loadTableEl.compareError, msg);
+  }
+
+  function clearCompareError() {
+    clearPanelError(loadTableEl.compareError);
+  }
+
+  function selectedFile(input) {
+    return input && input.files && input.files[0];
   }
 
   function saveLoadTableBlob(blob) {
@@ -658,18 +676,16 @@
     setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 1000);
   }
 
-  function postLoadTable(download, onProgress) {
+  function postLoadTable(download, onProgress, file) {
     return new Promise(function (resolve, reject) {
-      var file = selectedLoadFile();
       if (!file) {
-        showLoadTableError('Выберите файл Excel.');
         resolve(null);
         return;
       }
       var fd = new FormData();
       fd.append('file', file);
       var xhr = new XMLHttpRequest();
-      xhr.open('POST', API + '/api/articles/load-table' + (download ? '?download=1' : ''));
+      xhr.open('POST', API + '/api/articles/load-table' + (download ? '?download=1' : '?compare=1'));
       xhr.responseType = download ? 'blob' : 'json';
       if (onProgress && xhr.upload) {
         xhr.upload.onprogress = function (event) {
@@ -853,7 +869,8 @@
   if (loadTableEl.button) {
     loadTableEl.button.addEventListener('click', async function () {
       clearLoadTableError();
-      if (!selectedLoadFile()) {
+      var file = selectedFile(loadTableEl.file);
+      if (!file) {
         showLoadTableError('Выберите файл Excel.');
         return;
       }
@@ -873,7 +890,7 @@
             progress = value;
             button.textContent = progress + '%';
           }
-        });
+        }, file);
         if (!xhr) return;
         clearInterval(timer);
         timer = null;
@@ -893,9 +910,10 @@
 
   if (loadTableEl.compare) {
     loadTableEl.compare.addEventListener('click', async function () {
-      clearLoadTableError();
-      if (!selectedLoadFile()) {
-        showLoadTableError('Выберите файл Excel.');
+      clearCompareError();
+      var file = selectedFile(loadTableEl.compareFile);
+      if (!file) {
+        showCompareError('Выберите файл Excel.');
         return;
       }
       var button = loadTableEl.compare;
@@ -914,7 +932,7 @@
             progress = value;
             button.textContent = progress + '%';
           }
-        });
+        }, file);
         if (!xhr) return;
         clearInterval(timer);
         timer = null;
@@ -924,8 +942,8 @@
         clearDiffError();
         closeDiffForm();
         if (diffEl.meta) {
-          if (!data.compared_fields || !data.compared_fields.length) {
-            diffEl.meta.textContent = 'В файле нет колонок кода товара, страны происхождения или описания группы.';
+          if (!compareDiffs.length && !data.found_count) {
+            diffEl.meta.textContent = 'Артикулы из файла в базе не найдены.';
           } else if (!compareDiffs.length) {
             diffEl.meta.textContent = 'Расхождений нет.';
           } else {
@@ -934,7 +952,7 @@
         }
         renderCompare();
       } catch (err) {
-        showLoadTableError(err.message || 'Не удалось сравнить файл с базой');
+        showCompareError(err.message || 'Не удалось сравнить файл с базой');
       } finally {
         if (timer) clearInterval(timer);
         setTimeout(function () {

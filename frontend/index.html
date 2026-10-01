@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>ТаможенФормат</title>
-  <link rel="stylesheet" href="style.css?v=20260929.4" />
+  <link rel="stylesheet" href="style.css?v=20261001.1" />
 </head>
 <body>
   <header class="topbar">
@@ -162,35 +162,52 @@
 
       <!-- Tab: Articles -->
       <div class="tab-content" id="tab-articles">
-      <section class="hero">
-        <h1>База артикулов</h1>
-        <p>
-          Справочник из основной таблицы: артикул, описание, страна, код товара,
-          изготовитель, марка и модель. Записи можно добавлять и править.
-        </p>
-      </section>
-
       <section class="steps">
-        <article class="card">
-          <div class="card-head">
-            <div class="step-num">1</div>
-            <h2>Загрузочная таблица</h2>
-          </div>
-          <p class="article-lead">
-            Загрузите Excel со списком товаров. Файл с полями каталога скачается сам.
-            Если артикула нет в базе, в таблице останется только его номер.
-          </p>
-          <div class="article-toolbar">
+        <div class="load-board">
+          <article class="card">
+            <div class="card-head">
+              <div class="step-num">1</div>
+              <h2>Формирование загрузочной таблицы</h2>
+            </div>
+            <p class="card-desc">
+              Программа формирует загрузочную таблицу для декларирования по артикулам из базы.
+              В шаблоне для этой кнопки заполните только столбец «Артикул».
+              Если артикула нет в базе, в таблице останется только его номер.
+            </p>
+          </article>
+          <article class="card">
+            <div class="card-head">
+              <div class="step-num">2</div>
+              <h2>Сравнение данных с базой</h2>
+            </div>
+            <p class="card-desc">
+              Программа сверяет загруженную таблицу с базой.
+              Заполните артикул, описание и код ТН ВЭД.
+              Страну происхождения можно не заполнять: пустая ячейка не сверяется.
+            </p>
+          </article>
+          <a id="loadTemplateBtn" class="btn btn-primary load-template-btn load-span" href="article-template.xlsx" download="Шаблон для заполнения.xlsx">Скачать шаблон</a>
+          <label class="load-upload">
+            <span>Загрузить файл для таблицы</span>
             <input id="loadTableFile" type="file" accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          </label>
+          <label class="load-upload">
+            <span>Загрузить файл для сравнения</span>
+            <input id="loadCompareFile" type="file" accept=".xlsx,.xls,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+          </label>
+          <div class="load-action">
             <button id="loadTableBtn" type="button" class="btn btn-primary">Собрать таблицу</button>
-            <button id="loadCompareBtn" type="button" class="btn btn-ghost">Сравнение</button>
+            <div id="loadTableError" class="error-box" style="display:none;"></div>
           </div>
-          <div id="loadTableError" class="error-box" style="display:none;"></div>
-        </article>
+          <div class="load-action">
+            <button id="loadCompareBtn" type="button" class="btn btn-primary">Сравнение</button>
+            <div id="loadCompareError" class="error-box" style="display:none;"></div>
+          </div>
+        </div>
         <article class="card">
           <div class="card-head">
-            <div class="step-num">2</div>
-            <h2>Поиск и правки</h2>
+            <div class="step-num">3</div>
+            <h2>База артикулов</h2>
           </div>
           <div class="article-toolbar">
             <input id="articleSearch" type="search" placeholder="Артикул, описание, изготовитель, марка…" />
@@ -327,6 +344,6 @@
     </div>
   </footer>
 
-  <script src="app.js?v=20260929.5"></script>
+  <script src="app.js?v=20261001.1"></script>
 </body>
 </html>

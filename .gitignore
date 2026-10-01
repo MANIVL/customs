@@ -10,5 +10,6 @@ backend/data/articles.db-*
 backend/data/_ai_debug*
 *.xlsx
 !backend/data/default_template.xlsx
+!frontend/article-template.xlsx
 /litestream
 litestream.tar.gz

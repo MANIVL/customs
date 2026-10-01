@@ -127,7 +127,12 @@ def _compare_kind(token: str) -> str | None:
         return "origin_code"
     if "код страны" in norm:
         return "origin_code"
-    if "код товара" in norm or norm in {"hs code", "hs", "коды", "hscode", "hs-code"}:
+    if (
+        "код товара" in norm
+        or "тн вэд" in norm
+        or "tn ved" in norm
+        or norm in {"hs code", "hs", "коды", "hscode", "hs-code"}
+    ):
         return "hs_code"
     if "hs" in norm and "code" in norm:
         return "hs_code"
@@ -138,7 +143,7 @@ def _ten_digit_count(rows: list[list[str]], col: int) -> int:
     return sum(1 for row in rows if col < len(row) and _full_hs(row[col]))
 
 
-def _compare_map(header: list[str], data_rows: list[list[str]]) -> dict[str, int]:
+def _compare_map(header: list[str], data_rows: list[list[str]], *, keep_hs_header: bool = False) -> dict[str, int]:
     mapping: dict[str, int] = {}
     hs_candidates: list[int] = []
     for col, token in enumerate(header):
@@ -150,9 +155,22 @@ def _compare_map(header: list[str], data_rows: list[list[str]]) -> dict[str, int
             mapping[kind] = col
     if hs_candidates:
         best = max(hs_candidates, key=lambda col: _ten_digit_count(data_rows, col))
-        if _ten_digit_count(data_rows, best):
+        if keep_hs_header or _ten_digit_count(data_rows, best):
             mapping["hs_code"] = best
     return mapping
+
+
+def _row_gaps(row: list[str], compared: dict[str, int]) -> list[str]:
+    gaps: list[str] = []
+    desc_col = compared.get("group_description")
+    hs_col = compared.get("hs_code")
+    description = row[desc_col] if desc_col is not None and desc_col < len(row) else ""
+    hs_code = row[hs_col] if hs_col is not None and hs_col < len(row) else ""
+    if not description:
+        gaps.append("описание")
+    if not _full_hs(hs_code):
+        gaps.append("код ТН ВЭД")
+    return gaps
 
 
 def _blank_item(code: str) -> dict[str, str]:
@@ -178,7 +196,7 @@ def _values_differ(key: str, file_value: str, db_value: str) -> bool:
     return True
 
 
-def build_load_table(content: bytes, filename: str | None = None) -> dict[str, Any]:
+def build_load_table(content: bytes, filename: str | None = None, *, compare: bool = False) -> dict[str, Any]:
     if not content:
         raise ValueError("Файл пустой")
     grids = _grids(content, filename)
@@ -190,6 +208,8 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
     diffs: list[dict[str, Any]] = []
     seen_diffs: set[str] = set()
     compared: dict[str, int] = {}
+    if compare and (chosen is None or not chosen[3]):
+        raise ValueError("Для сравнения в файле нужен столбец «Артикул». Заполните шаблон.")
     if chosen is None:
         mode = "scan"
         for _title, rows in grids:
@@ -205,7 +225,33 @@ def build_load_table(content: bytes, filename: str | None = None) -> dict[str, A
         mode = "column"
         sheet_i, col, start, _header = chosen
         rows = grids[sheet_i][1]
-        compared = _compare_map(rows[start - 1] if start else [], rows[start:])
+        compared = _compare_map(
+            rows[start - 1] if start else [],
+            rows[start:],
+            keep_hs_header=compare,
+        )
+        if compare and ("group_description" not in compared or "hs_code" not in compared):
+            raise ValueError(
+                "Для сравнения нужны столбцы «Описание» и «Код ТН ВЭД». Скачайте шаблон и заполните их."
+            )
+        if compare:
+            incomplete: list[str] = []
+            for row in rows[start:]:
+                code = row[col] if col < len(row) else ""
+                if not code or _is_article_header(code) or code.casefold() not in index:
+                    continue
+                gaps = _row_gaps(row, compared)
+                if gaps:
+                    incomplete.append(f"{code} ({', '.join(gaps)})")
+            if incomplete:
+                shown = ", ".join(incomplete[:8])
+                extra = len(incomplete) - 8
+                if extra > 0:
+                    shown += f" и ещё {extra}"
+                raise ValueError(
+                    "Для сравнения заполните описание и код ТН ВЭД из 10 цифр. "
+                    "Страну происхождения можно оставить пустой. Не заполнено: " + shown
+                )
         for row in rows[start:]:
             code = row[col] if col < len(row) else ""
             if not code or _is_article_header(code):
