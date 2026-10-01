@@ -896,6 +896,22 @@
     });
   }
 
+  function fillCommonDescription(code, onlyIfEmpty) {
+    var hsCode = String(code || '').trim();
+    if (!hsCode || !diffEl.fields) return;
+    fetch(API + '/api/articles/common-description?hs_code=' + encodeURIComponent(hsCode))
+      .then(function (res) { return res.ok ? res.json() : null; })
+      .then(function (data) {
+        if (!data || !data.description || !diffEl.fields) return;
+        var hsInput = diffEl.fields.querySelector('[name="hs_code"]');
+        if (!hsInput || hsInput.value.trim() !== hsCode) return;
+        var desc = diffEl.fields.querySelector('[name="description"]');
+        if (!desc || (onlyIfEmpty && desc.value.trim())) return;
+        desc.value = String(data.description).toUpperCase();
+      })
+      .catch(function () {});
+  }
+
   function openDiffForm(diff) {
     clearDiffFormError();
     diffEditing = diff;
@@ -930,16 +946,7 @@
           clearTimeout(lookupTimer);
           var code = input.value.trim();
           if (!code || code === originalCode) return;
-          lookupTimer = setTimeout(function () {
-            fetch(API + '/api/articles/common-description?hs_code=' + encodeURIComponent(code))
-              .then(function (res) { return res.ok ? res.json() : null; })
-              .then(function (data) {
-                if (!data || !data.description || input.value.trim() !== code) return;
-                var desc = diffEl.fields.querySelector('[name="description"]');
-                if (desc) desc.value = String(data.description).toUpperCase();
-              })
-              .catch(function () {});
-          }, 300);
+          lookupTimer = setTimeout(function () { fillCommonDescription(code, false); }, 300);
         });
       }
       wrap.appendChild(caption);
@@ -949,6 +956,7 @@
     });
     diffEl.form.hidden = false;
     markDiffRow();
+    if (diff.missing && item.hs_code) fillCommonDescription(item.hs_code, true);
   }
 
   function renderCompare() {
